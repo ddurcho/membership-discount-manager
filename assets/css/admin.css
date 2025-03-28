@@ -1,0 +1,88 @@
+.mdm-admin-container {
+    margin-top: 20px;
+}
+
+.mdm-search-box {
+    margin-bottom: 20px;
+}
+
+#mdm-user-search {
+    width: 100%;
+    max-width: 300px;
+    padding: 8px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.mdm-tier-select {
+    min-width: 120px;
+    padding: 6px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.mdm-override-checkbox {
+    margin-right: 8px;
+}
+
+.mdm-save-button {
+    background-color: #0073aa !important;
+    color: white !important;
+    border-color: #006291 !important;
+}
+
+.mdm-save-button:hover {
+    background-color: #006291 !important;
+}
+
+/* Table Styles */
+.wp-list-table td {
+    vertical-align: middle;
+}
+
+.wp-list-table small {
+    color: #666;
+}
+
+/* Responsive Styles */
+@media screen and (max-width: 782px) {
+    .wp-list-table td {
+        padding: 15px 10px;
+    }
+    
+    .mdm-tier-select {
+        width: 100%;
+        max-width: 200px;
+    }
+    
+    .mdm-save-button {
+        width: 100%;
+        text-align: center;
+    }
+}
+
+/* Loading State */
+.mdm-loading {
+    position: relative;
+    min-height: 100px;
+}
+
+.mdm-loading:after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 30px;
+    height: 30px;
+    margin: -15px 0 0 -15px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #0073aa;
+    border-radius: 50%;
+    animation: mdm-spin 1s linear infinite;
+}
+
+@keyframes mdm-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+} 
