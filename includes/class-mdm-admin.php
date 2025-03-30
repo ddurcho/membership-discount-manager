@@ -413,39 +413,239 @@ class Admin {
     }
 
     /**
+     * Check if profile fields exist in WooCommerce Memberships
+     *
+     * @return array Array of field statuses
+     */
+    private function check_profile_fields_exist() {
+        global $wpdb;
+        
+        $required_fields = array(
+            'discount_tier' => 'VIP Status',
+            'average_spend_last_year' => 'Average spend last year',
+            'total_spend_all_time' => 'User total spend',
+            'manual_discount_override' => 'Flag to skip automatic recalculations',
+            'discount_last_sync' => 'Discount last sync'
+        );
+        
+        $fields_status = array();
+        
+        // Get the profile fields from wp_options
+        $profile_fields = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+                'wc_memberships_profile_fields'
+            )
+        );
+        
+        if ($profile_fields) {
+            $fields = maybe_unserialize($profile_fields);
+            
+            foreach ($required_fields as $slug => $name) {
+                $fields_status[$slug] = isset($fields[$slug]);
+            }
+        } else {
+            // If no fields found, mark all as non-existent
+            foreach ($required_fields as $slug => $name) {
+                $fields_status[$slug] = false;
+            }
+        }
+        
+        return $fields_status;
+    }
+
+    /**
      * Render options page
      */
     public function render_options_page() {
-        if (isset($_POST['submit']) && check_admin_referer('mdm_options_nonce')) {
-            // Handle tier settings
-            $tier_settings = array();
-            $tiers = array('none', 'bronze', 'silver', 'gold', 'platinum');
-
-            foreach ($tiers as $tier) {
-                $tier_settings[$tier] = array(
-                    'min_spend' => isset($_POST['tier'][$tier]['min_spend']) ? floatval($_POST['tier'][$tier]['min_spend']) : 0,
-                    'discount' => isset($_POST['tier'][$tier]['discount']) ? floatval($_POST['tier'][$tier]['discount']) : 0,
-                );
-            }
-
-            update_option('mdm_tier_settings', $tier_settings);
-
-            // Handle logging settings
-            update_option('mdm_logging_enabled', isset($_POST['mdm_logging_enabled']));
-            update_option('mdm_debug_mode', isset($_POST['mdm_debug_mode']));
-
-            $this->logger->info('Settings updated', array(
-                'logging_enabled' => get_option('mdm_logging_enabled'),
-                'debug_mode' => get_option('mdm_debug_mode')
-            ));
-
-            add_settings_error('mdm_messages', 'mdm_message', __('Settings Saved', 'membership-discount-manager'), 'updated');
-        }
-
-        // Get current settings
-        $tier_settings = get_option('mdm_tier_settings');
+        // Get current tab
+        $current_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'general';
         
-        include MDM_PLUGIN_DIR . 'templates/options.php';
+        ?>
+        <div class="wrap">
+            <h1><?php _e('Nestwork Discounts Options', 'membership-discount-manager'); ?></h1>
+            
+            <nav class="nav-tab-wrapper">
+                <a href="?page=nestwork-options&tab=general" class="nav-tab <?php echo $current_tab === 'general' ? 'nav-tab-active' : ''; ?>">
+                    <?php _e('General Settings', 'membership-discount-manager'); ?>
+                </a>
+                <a href="?page=nestwork-options&tab=debug" class="nav-tab <?php echo $current_tab === 'debug' ? 'nav-tab-active' : ''; ?>">
+                    <?php _e('Debug', 'membership-discount-manager'); ?>
+                </a>
+            </nav>
+
+            <form method="post" action="options.php">
+                <?php
+                settings_fields('mdm_options');
+                
+                if ($current_tab === 'general') {
+                    // General Settings Tab
+                    ?>
+                    <div id="general-settings" class="mdm-settings-section">
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Discount Tiers Configuration', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <?php $this->render_tier_settings(); ?>
+                            </div>
+                        </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Membership Fields Sync', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <tr>
+                                        <th scope="row"><?php _e('Sync Batch Size', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <input type="number" name="mdm_sync_batch_size" value="<?php echo esc_attr(get_option('mdm_sync_batch_size', 20)); ?>" min="1" max="100" />
+                                            <p class="description"><?php _e('Number of users to process in each sync batch (1-100)', 'membership-discount-manager'); ?></p>
+                                        </td>
+                                    </tr>
+                                </table>
+                                <?php $this->render_sync_settings(); ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php
+                } else if ($current_tab === 'debug') {
+                    // Debug Tab
+                    ?>
+                    <div id="debug-settings" class="mdm-settings-section">
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Automatic Updates', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <p><?php _e('The plugin automatically updates membership tiers and discounts based on user spending patterns. Updates occur daily through WordPress cron jobs.', 'membership-discount-manager'); ?></p>
+                            </div>
+                        </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Profile Fields Status', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <?php
+                                    $fields_status = $this->check_profile_fields_exist();
+                                    $required_fields = array(
+                                        'discount_tier' => 'VIP Status',
+                                        'average_spend_last_year' => 'Average spend last year',
+                                        'total_spend_all_time' => 'User total spend',
+                                        'manual_discount_override' => 'Flag to skip automatic recalculations',
+                                        'discount_last_sync' => 'Discount last sync'
+                                    );
+
+                                    foreach ($required_fields as $slug => $name) :
+                                        $exists = $fields_status[$slug];
+                                        $status_icon = $exists ? '✓' : '✗';
+                                        $status_color = $exists ? 'green' : 'red';
+                                    ?>
+                                        <tr>
+                                            <th scope="row">
+                                                <?php echo esc_html($name); ?>
+                                                <br>
+                                                <small style="font-weight: normal; color: #666;">
+                                                    <?php echo esc_html($slug); ?>
+                                                </small>
+                                            </th>
+                                            <td>
+                                                <span style="color: <?php echo $status_color; ?>; font-size: 18px; font-weight: bold;">
+                                                    <?php echo $status_icon; ?>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Logging Settings', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <tr>
+                                        <th scope="row"><?php _e('Enable Logging', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <label>
+                                                <input type="checkbox" name="mdm_logging_enabled" value="1" <?php checked(get_option('mdm_logging_enabled', true)); ?> />
+                                                <?php _e('Enable debug logging', 'membership-discount-manager'); ?>
+                                            </label>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row"><?php _e('Debug Mode', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <label>
+                                                <input type="checkbox" name="mdm_debug_mode" value="1" <?php checked(get_option('mdm_debug_mode', false)); ?> />
+                                                <?php _e('Enable debug mode', 'membership-discount-manager'); ?>
+                                            </label>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row"><?php _e('Clear Logs', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <button type="button" id="mdm-clear-logs" class="button">
+                                                <?php _e('Clear Debug Logs', 'membership-discount-manager'); ?>
+                                            </button>
+                                            <p class="description"><?php _e('Clear all debug logs from the database', 'membership-discount-manager'); ?></p>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <?php
+                }
+                ?>
+                
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
+    }
+
+    /**
+     * Render tier settings section
+     */
+    private function render_tier_settings() {
+        $tier_settings = get_option('mdm_tier_settings');
+        ?>
+        <table class="form-table">
+            <?php foreach ($tier_settings as $tier => $settings) : ?>
+                <tr>
+                    <th scope="row"><?php echo esc_html(ucfirst($tier)); ?> <?php _e('Tier', 'membership-discount-manager'); ?></th>
+                    <td>
+                        <label>
+                            <?php _e('Minimum Spend:', 'membership-discount-manager'); ?>
+                            <input type="number" name="mdm_tier_settings[<?php echo esc_attr($tier); ?>][min_spend]" 
+                                value="<?php echo esc_attr($settings['min_spend']); ?>" step="0.01" min="0" />
+                        </label>
+                        <label>
+                            <?php _e('Discount %:', 'membership-discount-manager'); ?>
+                            <input type="number" name="mdm_tier_settings[<?php echo esc_attr($tier); ?>][discount]" 
+                                value="<?php echo esc_attr($settings['discount']); ?>" step="0.1" min="0" max="100" />
+                        </label>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+        <?php
+    }
+
+    /**
+     * Render sync settings section
+     */
+    private function render_sync_settings() {
+        ?>
+        <table class="form-table">
+            <tr>
+                <th scope="row"><?php _e('Sync Membership Fields', 'membership-discount-manager'); ?></th>
+                <td>
+                    <button type="button" id="mdm-sync-fields" class="button">
+                        <?php _e('Sync Now', 'membership-discount-manager'); ?>
+                    </button>
+                    <span id="mdm-sync-status" class="spinner" style="float: none; margin-left: 10px;"></span>
+                    <p class="description"><?php _e('Synchronize membership fields for all users', 'membership-discount-manager'); ?></p>
+                </td>
+            </tr>
+        </table>
+        <?php
     }
 
     /**

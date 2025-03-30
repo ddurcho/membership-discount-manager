@@ -161,6 +161,11 @@ class Discount_Handler {
         add_action('woocommerce_cart_totals_before_order_total', array($this, 'display_discount_info'), 99);
         add_action('woocommerce_review_order_before_order_total', array($this, 'display_discount_info'), 99);
         
+        // Coupon restriction hooks
+        add_filter('woocommerce_coupon_is_valid', array($this, 'validate_coupon_for_vip'), 10, 2);
+        add_action('woocommerce_before_cart', array($this, 'check_and_remove_coupons'));
+        add_action('woocommerce_before_checkout_form', array($this, 'check_and_remove_coupons'));
+        
         // CartFlows compatibility
         if (class_exists('\\CartFlows\\Core')) {
             add_action('cartflows_checkout_before_calculate_totals', array($this, 'add_discount_fee'), 99);
@@ -525,6 +530,24 @@ class Discount_Handler {
                 // Store for display
                 WC()->session->set('mdm_discount_info', $discount_info);
                 WC()->session->set('mdm_total_discount', $total_discount);
+
+                // If there are any coupons applied, remove them and show notice
+                if (!empty($cart->get_applied_coupons())) {
+                    $cart->remove_coupons();
+                    
+                    // Show message only if not already shown
+                    if (!wc_has_notice('vip_discount_notice')) {
+                        wc_add_notice(
+                            sprintf(
+                                __('Note: Your VIP %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
+                                $discount_info['tier'],
+                                $discount_info['percentage']
+                            ),
+                            'notice',
+                            ['vip_discount_notice']
+                        );
+                    }
+                }
             } else {
                 // Clear discount data if no discount is calculated
                 WC()->session->set('mdm_discount_info', null);
@@ -546,26 +569,8 @@ class Discount_Handler {
      * Display discount information
      */
     public function display_discount_info() {
-        $discount_info = WC()->session->get('mdm_discount_info');
-        $total_discount = WC()->session->get('mdm_total_discount');
-
-        if ($discount_info && $total_discount > 0) {
-            ?>
-            <tr class="membership-discount">
-                <th><?php _e('VIP Discount', 'membership-discount-manager'); ?></th>
-                <td data-title="<?php esc_attr_e('VIP Discount', 'membership-discount-manager'); ?>">
-                    <?php 
-                    printf(
-                        __('%s Tier (%s%%) - You saved %s', 'membership-discount-manager'),
-                        $discount_info['tier'],
-                        $discount_info['percentage'],
-                        wc_price($total_discount)
-                    ); 
-                    ?>
-                </td>
-            </tr>
-            <?php
-        }
+        // Disable duplicate discount display since it's already shown as a fee
+        return;
     }
 
     /**
@@ -576,33 +581,28 @@ class Discount_Handler {
      * @return array
      */
     public function add_discount_info_to_order($total_rows, $order) {
-        $user_id = $order->get_user_id();
-        $discount_info = $this->get_user_discount($user_id);
+        $discount_info = $order->get_meta('_mdm_discount_info');
+        $total_discount = $order->get_discount_total();
 
-        if ($discount_info) {
-            $this->logger->debug('Adding discount info to order', [
-                'order_id' => $order->get_id(),
-                'user_id' => $user_id,
-                'discount_info' => $discount_info
-            ]);
-
+        if ($discount_info && $total_discount > 0) {
             $new_rows = array();
-            
+
             foreach ($total_rows as $key => $row) {
-                $new_rows[$key] = $row;
-                
-                if ($key === 'order_total') {
-                    $new_rows['membership_discount'] = array(
-                        'label' => __('VIP Discount:', 'membership-discount-manager'),
-                        'value' => sprintf(
-                            __('%s Tier (%s%% discount)', 'membership-discount-manager'),
+                if ($key === 'cart_subtotal') {
+                    $new_rows[$key] = $row;
+                    $new_rows['discount'] = array(
+                        'label' => sprintf(
+                            __('VIP %s Tier Discount (%s%%)', 'membership-discount-manager'),
                             $discount_info['tier'],
                             $discount_info['percentage']
-                        )
+                        ),
+                        'value' => '-' . wc_price($total_discount)
                     );
+                } else {
+                    $new_rows[$key] = $row;
                 }
             }
-            
+
             return $new_rows;
         }
 
@@ -635,5 +635,49 @@ class Discount_Handler {
     public function modify_product_price($price, $product) {
         // Return original price - we'll handle discounts through cart fees
         return $price;
+    }
+
+    /**
+     * Validate if coupon can be used with VIP discount
+     *
+     * @param bool $valid
+     * @param WC_Coupon $coupon
+     * @return bool
+     */
+    public function validate_coupon_for_vip($valid, $coupon) {
+        // If coupon is already invalid for other reasons, return early
+        if (!$valid) {
+            return $valid;
+        }
+
+        $user_id = get_current_user_id();
+        $discount_info = $this->get_user_discount($user_id);
+
+        // If user has VIP discount, prevent coupon usage with custom message
+        if ($discount_info) {
+            // Show message only if not already shown
+            if (!wc_has_notice('vip_discount_notice')) {
+                wc_add_notice(
+                    sprintf(
+                        __('The coupon "%s" cannot be used because your VIP %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
+                        $coupon->get_code(),
+                        $discount_info['tier'],
+                        $discount_info['percentage']
+                    ),
+                    'error'
+                );
+            }
+            return false;
+        }
+
+        return $valid;
+    }
+
+    /**
+     * Check and remove any applied coupons for VIP members
+     */
+    public function check_and_remove_coupons() {
+        // This functionality is now handled in add_discount_fee
+        return;
     }
 } 

@@ -85,4 +85,76 @@
 @keyframes mdm-spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+.mdm-settings-box {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+    margin-bottom: 20px;
+    padding: 0;
+    line-height: 1;
+}
+
+.mdm-settings-box h2 {
+    border-bottom: 1px solid #ccd0d4;
+    margin: 0;
+    padding: 15px;
+    font-size: 14px;
+    line-height: 1.4;
+    background: #fff;
+}
+
+.mdm-settings-box .inside {
+    margin: 15px;
+    padding: 0;
+}
+
+.mdm-settings-section {
+    margin-top: 20px;
+}
+
+.mdm-settings-box .form-table {
+    margin-top: 0;
+}
+
+.mdm-settings-box .form-table th {
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.mdm-settings-box .form-table td {
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+/* Tab styling */
+.nav-tab-wrapper {
+    margin-bottom: 20px;
+}
+
+/* Submit button spacing */
+.mdm-settings-section + p.submit {
+    margin-top: 20px;
+    padding-top: 0;
+}
+
+/* Description text styling */
+.mdm-settings-box .description {
+    margin: 5px 0;
+    color: #666;
+}
+
+/* Inside padding adjustments */
+.mdm-settings-box .inside:after {
+    content: "";
+    display: table;
+    clear: both;
+}
+
+/* Responsive adjustments */
+@media screen and (max-width: 782px) {
+    .mdm-settings-box .form-table td input[type="number"] {
+        max-width: 100%;
+    }
 } 

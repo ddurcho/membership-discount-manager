@@ -28,6 +28,8 @@ define('MDM_PLUGIN_FILE', __FILE__);
 // Load required files for activation/deactivation
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-activator.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-deactivator.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-logger.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-setup.php';
 
 /**
  * Check if WooCommerce is active
@@ -106,7 +108,6 @@ function mdm_init() {
     }
 
     // Load required files
-    require_once MDM_PLUGIN_DIR . 'includes/class-mdm-logger.php';
     require_once MDM_PLUGIN_DIR . 'includes/class-mdm-admin.php';
     require_once MDM_PLUGIN_DIR . 'includes/class-mdm-discount-handler.php';
 

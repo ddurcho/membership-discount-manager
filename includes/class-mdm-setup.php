@@ -22,9 +22,9 @@ class Setup {
     public function __construct() {
         $this->logger = new Logger();
         
-        // Initialize early
-        add_action('plugins_loaded', array($this, 'init'), 20);
-        add_action('wp_loaded', array($this, 'late_init'), 20);
+        // Initialize after WooCommerce is fully loaded
+        \add_action('woocommerce_init', array($this, 'init'), 20);
+        \add_action('wp_loaded', array($this, 'late_init'), 20);
         
         $this->logger->info('MDM Setup constructor called');
     }
@@ -33,36 +33,30 @@ class Setup {
      * Initialize the setup
      */
     public function init() {
-        $this->logger->info('MDM Setup init started', [
-            'is_checkout' => is_checkout(),
-            'is_cart' => is_cart(),
-            'doing_ajax' => defined('DOING_AJAX') && DOING_AJAX
-        ]);
-
         // Check if WooCommerce is active
-        if (!class_exists('WooCommerce')) {
+        if (!\class_exists('WooCommerce')) {
             $this->logger->error('WooCommerce not active');
             return;
         }
 
         // Check if WooCommerce Memberships is active
-        if (!class_exists('WC_Memberships')) {
+        if (!\class_exists('WC_Memberships')) {
             $this->logger->error('WooCommerce Memberships not active');
             return;
         }
 
         // Register activation/deactivation hooks
-        register_activation_hook(MDM_PLUGIN_FILE, array($this, 'activate'));
-        register_deactivation_hook(MDM_PLUGIN_FILE, array($this, 'deactivate'));
+        \register_activation_hook(MDM_PLUGIN_FILE, array($this, 'activate'));
+        \register_deactivation_hook(MDM_PLUGIN_FILE, array($this, 'deactivate'));
 
         // Register cron hook
-        add_action('mdm_daily_sync_hook', array($this, 'run_daily_sync'));
+        \add_action('mdm_daily_sync_hook', array($this, 'run_daily_sync'));
 
         // Register WooCommerce order hooks
-        add_action('woocommerce_order_status_completed', array($this, 'sync_completed_order'));
+        \add_action('woocommerce_order_status_completed', array($this, 'sync_completed_order'));
 
         // Initialize discount handler for front-end or AJAX requests
-        if (!is_admin() || (defined('DOING_AJAX') && DOING_AJAX)) {
+        if (!\is_admin() || (defined('DOING_AJAX') && DOING_AJAX)) {
             $this->init_discount_handler();
         }
 
@@ -73,10 +67,14 @@ class Setup {
      * Late initialization
      */
     public function late_init() {
+        if (!\function_exists('WC')) {
+            return;
+        }
+
         $this->logger->info('MDM Late init started', [
-            'is_checkout' => function_exists('is_checkout') ? is_checkout() : 'function_not_exists',
-            'is_cart' => function_exists('is_cart') ? is_cart() : 'function_not_exists',
-            'user_id' => get_current_user_id()
+            'is_checkout' => \function_exists('is_checkout') ? \is_checkout() : 'function_not_exists',
+            'is_cart' => \function_exists('is_cart') ? \is_cart() : 'function_not_exists',
+            'user_id' => \get_current_user_id()
         ]);
 
         // Reinitialize discount handler if needed
@@ -89,7 +87,7 @@ class Setup {
      * Initialize the discount handler
      */
     private function init_discount_handler() {
-        if (!$this->discount_handler) {
+        if (!$this->discount_handler && \function_exists('WC')) {
             $this->logger->info('Initializing Discount Handler');
             $this->discount_handler = new Discount_Handler();
             
@@ -102,7 +100,7 @@ class Setup {
      * Check if current page is cart or checkout
      */
     private function is_cart_or_checkout() {
-        return function_exists('is_checkout') && (is_checkout() || is_cart());
+        return \function_exists('is_checkout') && \function_exists('WC') && (\is_checkout() || \is_cart());
     }
 
     /**
@@ -121,8 +119,8 @@ class Setup {
         $this->logger->info('Activating MDM plugin');
         
         // Schedule daily sync if not already scheduled
-        if (!wp_next_scheduled('mdm_daily_sync_hook')) {
-            wp_schedule_event(time(), 'daily', 'mdm_daily_sync_hook');
+        if (!\wp_next_scheduled('mdm_daily_sync_hook')) {
+            \wp_schedule_event(time(), 'daily', 'mdm_daily_sync_hook');
             $this->logger->debug('Daily sync scheduled');
         }
     }
@@ -134,7 +132,7 @@ class Setup {
         $this->logger->info('Deactivating MDM plugin');
         
         // Remove scheduled sync
-        wp_clear_scheduled_hook('mdm_daily_sync_hook');
+        \wp_clear_scheduled_hook('mdm_daily_sync_hook');
         $this->logger->debug('Daily sync unscheduled');
     }
 
