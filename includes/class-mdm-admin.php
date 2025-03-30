@@ -1018,14 +1018,21 @@ class Admin {
                 'total_spend' => $user->total_spend
             ));
 
-            // Update spending data
+            // Always update spending data and timestamp, regardless of manual override
             update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
             update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
+            update_user_meta($user->user_id, '_wc_memberships_profile_field_last_updated', current_time('mysql'));
 
-            // Skip if manual override is enabled
+            $this->logger->info("[$source] Updated user spending data", array(
+                'user_id' => $user->user_id,
+                'yearly_spend' => $user->yearly_spend,
+                'total_spend' => $user->total_spend
+            ));
+
+            // Check for manual override before updating tier
             $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
             if ($manual_override === 'yes') {
-                $this->logger->debug("[$source] Skipping user due to manual override", array(
+                $this->logger->debug("[$source] Skipping tier update due to manual override", array(
                     'user_id' => $user->user_id
                 ));
                 $stats['skipped']++;
@@ -1048,14 +1055,7 @@ class Admin {
             $stats['processed']++;
         }
 
-        $this->logger->info("[$source] Completed sync batch", array(
-            'processed' => $stats['processed'],
-            'updated' => $stats['updated'],
-            'skipped' => $stats['skipped'],
-            'offset' => $offset,
-            'total' => $total
-        ));
-
+        $this->logger->info("[$source] Completed batch", $stats);
         return $stats;
     }
 
@@ -1550,6 +1550,80 @@ class Admin {
                 'error' => true,
                 'error_message' => $e->getMessage()
             ));
+        }
+    }
+
+    /**
+     * Sync user data when an order is completed
+     * 
+     * @param int $order_id WooCommerce order ID
+     * @return array|WP_Error Result of the sync operation
+     */
+    public function sync_order_user($order_id) {
+        try {
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                throw new \Exception('Order not found');
+            }
+
+            $user_id = $order->get_user_id();
+            if (!$user_id) {
+                throw new \Exception('Order has no associated user');
+            }
+
+            // Always update spending data regardless of manual override
+            global $wpdb;
+            $user_data = $wpdb->get_row($wpdb->prepare("
+                SELECT 
+                    cl.user_id,
+                    ROUND(SUM(CASE 
+                        WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+                        THEN os.total_sales 
+                        ELSE 0 
+                    END), 2) as yearly_spend,
+                    ROUND(SUM(os.total_sales), 2) as total_spend
+                FROM {$wpdb->prefix}wc_order_stats AS os
+                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
+                WHERE os.status = 'wc-completed' AND cl.user_id = %d
+                GROUP BY cl.user_id
+            ", $user_id));
+
+            if ($user_data) {
+                // Always update spending data
+                update_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', $user_data->yearly_spend);
+                update_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', $user_data->total_spend);
+                update_user_meta($user_id, '_wc_memberships_profile_field_last_updated', current_time('mysql'));
+                
+                $this->logger->info('Updated user spending data', array(
+                    'user_id' => $user_id,
+                    'yearly_spend' => $user_data->yearly_spend,
+                    'total_spend' => $user_data->total_spend
+                ));
+
+                // Only update tier if manual override is not set
+                $manual_override = get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true);
+                if ($manual_override !== 'yes') {
+                    $this->calculate_and_update_user_tier($user_id);
+                    $this->logger->info('Updated user tier (auto)', array('user_id' => $user_id));
+                } else {
+                    $this->logger->info('Skipped tier update (manual override)', array('user_id' => $user_id));
+                }
+            }
+
+            return array(
+                'success' => true,
+                'user_id' => $user_id,
+                'yearly_spend' => $user_data->yearly_spend,
+                'total_spend' => $user_data->total_spend,
+                'manual_override' => ($manual_override === 'yes')
+            );
+
+        } catch (\Exception $e) {
+            $this->logger->error('Order sync failed', array(
+                'order_id' => $order_id,
+                'error' => $e->getMessage()
+            ));
+            return new \WP_Error('sync_error', $e->getMessage());
         }
     }
 } 
