@@ -142,51 +142,21 @@ jQuery(document).ready(function($) {
         var $progress = $('#mdm-sync-progress');
         var $progressBar = $progress.find('.mdm-progress-fill');
         var $status = $progress.find('.mdm-progress-status');
-        var isSyncing = false;
-
-        // Prevent multiple clicks
-        if (isSyncing) {
+        var batchSize = parseInt($('input[name="mdm_sync_batch_size"]').val()) || 20;
+        
+        // Prevent multiple clicks while syncing
+        if ($button.prop('disabled')) {
             return;
         }
 
-        // Disable button and show spinner
+        // Reset progress UI
+        $progressBar.css('width', '0%');
+        $progress.removeClass('hidden').show();
         $button.prop('disabled', true);
         $spinner.addClass('is-active');
-        $progress.removeClass('hidden');
-        isSyncing = true;
+        $status.text('Starting sync...');
         
-        // Initialize progress
-        var processed = 0;
-        var total = 0;
-        var batchSize = parseInt($('#mdm-batch-size').val()) || 20;
-        
-        // Validate batch size
-        batchSize = Math.min(Math.max(batchSize, 1), 100);
-
-        function updateProgress(stats) {
-            if (!stats) return;
-
-            var progress = Math.round((stats.processed / stats.total) * 100);
-            $progressBar.css('width', progress + '%');
-            
-            if (stats.processed >= stats.total) {
-                // Format completion message with actual number
-                var message = mdmAjax.i18n.sync_complete.replace('%1$d', stats.processed);
-                $status.text(message);
-                $spinner.removeClass('is-active');
-                $button.prop('disabled', false);
-            } else {
-                // Format progress message with percentage
-                var message = mdmAjax.i18n.syncing.replace('%1$d', progress);
-                $status.text(message);
-            }
-        }
-
         function processBatch(offset) {
-            if (!isSyncing) {
-                return;
-            }
-
             $.ajax({
                 url: mdmAjax.ajaxurl,
                 type: 'POST',
@@ -197,56 +167,107 @@ jQuery(document).ready(function($) {
                     batch_size: batchSize
                 },
                 success: function(response) {
-                    if (!isSyncing) {
+                    if (!response.success) {
+                        handleError(response.data || 'Unknown error occurred during sync');
                         return;
                     }
 
-                    if (response.success) {
-                        processed = response.data.processed;
-                        total = response.data.total;
-                        
-                        updateProgress({ processed, total });
+                    if (!response.data || typeof response.data.processed === 'undefined' || typeof response.data.total === 'undefined') {
+                        handleError('Invalid response format from server');
+                        return;
+                    }
 
-                        if (processed < total) {
-                            // Process next batch after a small delay
-                            setTimeout(function() {
-                                processBatch(processed);
-                            }, 500);
-                        } else {
-                            // Sync complete
-                            completeSync(total);
-                        }
+                    var progress = Math.round((response.data.processed / response.data.total) * 100);
+                    $progressBar.css('width', progress + '%');
+                    
+                    if (response.data.processed >= response.data.total) {
+                        $status.html(
+                            'Sync complete!<br>' +
+                            'Processed ' + response.data.processed + ' records out of ' + response.data.total + '.'
+                        );
+                        $spinner.removeClass('is-active');
+                        $button.prop('disabled', false);
+                        
+                        // Reload page after 2 seconds
+                        setTimeout(function() {
+                            window.location.reload();
+                        }, 2000);
                     } else {
-                        handleError(response.data);
+                        $status.html(
+                            'Syncing...<br>' +
+                            'Processed ' + response.data.processed + ' out of ' + response.data.total + ' records (' + progress + '%)'
+                        );
+                        setTimeout(function() {
+                            processBatch(response.data.processed);
+                        }, 500);
                     }
                 },
                 error: function(xhr, status, error) {
-                    handleError(error);
+                    var errorMessage = '';
+                    try {
+                        var response = JSON.parse(xhr.responseText);
+                        errorMessage = response.data || error || 'Server error occurred';
+                    } catch(e) {
+                        errorMessage = error || 'Server error occurred';
+                    }
+                    handleError(errorMessage);
                 }
             });
         }
 
-        function completeSync(total) {
-            isSyncing = false;
-            $button.prop('disabled', false);
-            $spinner.removeClass('is-active');
-            var message = mdmAjax.i18n.sync_complete.replace('%1$d', total.toString());
-            $status.text(message);
-            
-            // Update last sync time
-            var now = new Date();
-            $('.mdm-last-sync-time').text(now.toLocaleString());
-        }
-
         function handleError(error) {
-            isSyncing = false;
-            $button.prop('disabled', false);
+            $status.html(
+                '<span style="color: red;">Error: ' + error + '</span><br>' +
+                'Please try again or contact support if the issue persists.'
+            );
             $spinner.removeClass('is-active');
-            $status.text(mdmAjax.i18n.sync_error);
+            $button.prop('disabled', false);
             console.error('Sync error:', error);
         }
 
         // Start processing
         processBatch(0);
+    });
+
+    // Handle clear logs button
+    $('#mdm-clear-logs').on('click', function() {
+        var $button = $(this);
+        
+        if ($button.prop('disabled')) {
+            return;
+        }
+
+        // Show confirmation dialog
+        if (!confirm(mdmAjax.i18n.confirm_clear_logs)) {
+            return;
+        }
+
+        $button.prop('disabled', true)
+            .addClass('updating-message')
+            .text(mdmAjax.i18n.clearing_logs || 'Clearing...');
+        
+        $.ajax({
+            url: mdmAjax.ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'mdm_clear_logs',
+                nonce: mdmAjax.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    alert(mdmAjax.i18n.logs_cleared);
+                } else {
+                    alert(response.data && response.data.message ? response.data.message : mdmAjax.i18n.clear_logs_error);
+                }
+            },
+            error: function() {
+                alert(mdmAjax.i18n.clear_logs_error);
+            },
+            complete: function() {
+                $button.prop('disabled', false)
+                    .removeClass('updating-message')
+                    .text(mdmAjax.i18n.clear_logs_button || 'Clear Debug Logs');
+            }
+        });
     });
 }); 

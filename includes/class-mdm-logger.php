@@ -144,15 +144,34 @@ class Logger {
 
     /**
      * Clear all log files
+     * 
+     * @return bool True if logs were cleared successfully, false otherwise
      */
     public function clear_logs() {
-        if (!$this->logging_enabled || !file_exists($this->log_dir)) {
-            return;
-        }
+        try {
+            if (!$this->logging_enabled || !file_exists($this->log_dir)) {
+                return false;
+            }
 
-        $files = glob($this->log_dir . '/mdm-*.log');
-        foreach ($files as $file) {
-            unlink($file);
+            $files = glob($this->log_dir . '/mdm-*.log');
+            if (empty($files)) {
+                return true; // No files to delete is still a success
+            }
+
+            $success = true;
+            foreach ($files as $file) {
+                if (is_file($file) && is_writable($file)) {
+                    if (!unlink($file)) {
+                        $success = false;
+                        error_log('MDM Logger: Failed to delete log file: ' . $file);
+                    }
+                }
+            }
+
+            return $success;
+        } catch (\Exception $e) {
+            error_log('MDM Logger Error: ' . $e->getMessage());
+            return false;
         }
     }
 } 

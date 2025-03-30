@@ -166,6 +166,10 @@ class Admin {
             'default' => false,
         ));
 
+        // New automation settings
+        register_setting('mdm_options', 'mdm_auto_calc_enabled');
+        register_setting('mdm_options', 'mdm_auto_calc_frequency');
+
         // Add AJAX handler for clearing logs
         add_action('wp_ajax_mdm_clear_logs', array($this, 'ajax_clear_logs'));
     }
@@ -233,6 +237,9 @@ class Admin {
                 'syncing' => __('Syncing... %1$d%', 'membership-discount-manager'),
                 'sync_complete' => __('Sync complete! Processed %1$d members.', 'membership-discount-manager'),
                 'sync_error' => __('Error occurred during sync. Please try again.', 'membership-discount-manager'),
+                'confirm_clear_logs' => __('You are about to clear all debug logs. This action cannot be undone. Are you sure you want to continue?', 'membership-discount-manager'),
+                'logs_cleared' => __('Debug logs have been cleared successfully.', 'membership-discount-manager'),
+                'clear_logs_error' => __('Error clearing debug logs. Please try again or check server permissions.', 'membership-discount-manager')
             ),
         ));
     }
@@ -460,23 +467,31 @@ class Admin {
     public function render_options_page() {
         // Get current tab
         $current_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'general';
-        
         ?>
         <div class="wrap">
             <h1><?php _e('Nestwork Discounts Options', 'membership-discount-manager'); ?></h1>
-            
+
+            <?php settings_errors(); ?>
+
             <nav class="nav-tab-wrapper">
                 <a href="?page=nestwork-options&tab=general" class="nav-tab <?php echo $current_tab === 'general' ? 'nav-tab-active' : ''; ?>">
                     <?php _e('General Settings', 'membership-discount-manager'); ?>
+                </a>
+                <a href="?page=nestwork-options&tab=automation" class="nav-tab <?php echo $current_tab === 'automation' ? 'nav-tab-active' : ''; ?>">
+                    <?php _e('Automation', 'membership-discount-manager'); ?>
                 </a>
                 <a href="?page=nestwork-options&tab=debug" class="nav-tab <?php echo $current_tab === 'debug' ? 'nav-tab-active' : ''; ?>">
                     <?php _e('Debug', 'membership-discount-manager'); ?>
                 </a>
             </nav>
 
-            <form method="post" action="options.php">
+            <form method="post" action="<?php echo admin_url('admin.php?page=nestwork-options&tab=' . $current_tab); ?>">
                 <?php
-                settings_fields('mdm_options');
+                wp_nonce_field('mdm_save_settings', 'mdm_settings_nonce');
+                
+                // Add hidden field for current tab
+                echo '<input type="hidden" name="tab" value="' . esc_attr($current_tab) . '" />';
+                echo '<input type="hidden" name="action" value="mdm_save_settings" />';
                 
                 if ($current_tab === 'general') {
                     // General Settings Tab
@@ -506,17 +521,144 @@ class Admin {
                         </div>
                     </div>
                     <?php
+                } else if ($current_tab === 'automation') {
+                    // Automation Tab
+                    ?>
+                    <div id="automation-settings" class="mdm-settings-section">
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Automatic Calculation Settings', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <tr>
+                                        <th scope="row"><?php _e('Enable Automatic Calculation', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <label>
+                                                <input type="checkbox" 
+                                                       name="mdm_auto_calc_enabled" 
+                                                       value="1" 
+                                                       <?php checked(get_option('mdm_auto_calc_enabled', false)); ?> />
+                                                <?php _e('Enable automatic tier calculation', 'membership-discount-manager'); ?>
+                                            </label>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row"><?php _e('Calculation Frequency', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <select name="mdm_auto_calc_frequency">
+                                                <?php
+                                                $current_frequency = get_option('mdm_auto_calc_frequency', 'daily');
+                                                $frequencies = array(
+                                                    'five_minutes' => __('Every 5 minutes', 'membership-discount-manager'),
+                                                    'hourly' => __('Hourly', 'membership-discount-manager'),
+                                                    'daily' => __('Daily', 'membership-discount-manager')
+                                                );
+                                                foreach ($frequencies as $value => $label) {
+                                                    printf(
+                                                        '<option value="%s" %s>%s</option>',
+                                                        esc_attr($value),
+                                                        selected($current_frequency, $value, false),
+                                                        esc_html($label)
+                                                    );
+                                                }
+                                                ?>
+                                            </select>
+                                            <?php if ($wp_cron_disabled): ?>
+                                            <p class="description">
+                                                <?php _e('Note: Since WordPress Cron is disabled, the actual execution frequency depends on your system cron configuration.', 'membership-discount-manager'); ?>
+                                            </p>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Last Run Status', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <?php $this->display_last_run_status(); ?>
+                            </div>
+                        </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Cron Status', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <?php
+                                // Check WordPress Cron Status
+                                $wp_cron_disabled = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+                                $cron_status_color = $wp_cron_disabled ? 'orange' : 'green';
+                                $cron_status_text = $wp_cron_disabled ? 
+                                    __('WordPress Cron is disabled (using system cron)', 'membership-discount-manager') : 
+                                    __('WordPress Cron is enabled', 'membership-discount-manager');
+
+                                // Get next scheduled run
+                                $next_scheduled = wp_next_scheduled('mdm_auto_calculation');
+                                $is_scheduled = $next_scheduled !== false;
+                                
+                                // Check if automatic calculation is enabled
+                                $auto_calc_enabled = get_option('mdm_auto_calc_enabled', false);
+                                ?>
+                                
+                                <table class="widefat striped">
+                                    <tr>
+                                        <td><strong><?php _e('WordPress Cron:', 'membership-discount-manager'); ?></strong></td>
+                                        <td>
+                                            <span style="color: <?php echo $cron_status_color; ?>;">
+                                                <?php echo esc_html($cron_status_text); ?>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e('Automatic Calculation:', 'membership-discount-manager'); ?></strong></td>
+                                        <td>
+                                            <span style="color: <?php echo $auto_calc_enabled ? 'green' : 'red'; ?>;">
+                                                <?php echo $auto_calc_enabled ? 
+                                                    esc_html__('Enabled', 'membership-discount-manager') : 
+                                                    esc_html__('Disabled', 'membership-discount-manager'); ?>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e('Next Scheduled Run:', 'membership-discount-manager'); ?></strong></td>
+                                        <td>
+                                            <?php
+                                            if ($is_scheduled) {
+                                                echo esc_html(wp_date(
+                                                    get_option('date_format') . ' ' . get_option('time_format'), 
+                                                    $next_scheduled
+                                                ));
+                                            } else {
+                                                echo '<span style="color: red;">' . 
+                                                    esc_html__('Not scheduled', 'membership-discount-manager') . 
+                                                    '</span>';
+                                            }
+                                            ?>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e('Frequency:', 'membership-discount-manager'); ?></strong></td>
+                                        <td>
+                                            <?php 
+                                            $frequency = get_option('mdm_auto_calc_frequency', 'daily');
+                                            echo esc_html(ucfirst($frequency)); 
+                                            ?>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <?php if ($wp_cron_disabled): ?>
+                                <p class="description" style="margin-top: 10px;">
+                                    <?php _e('WordPress Cron is disabled in wp-config.php. Make sure your system cron job is properly configured to trigger wp-cron.php regularly.', 'membership-discount-manager'); ?>
+                                </p>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php
                 } else if ($current_tab === 'debug') {
                     // Debug Tab
                     ?>
                     <div id="debug-settings" class="mdm-settings-section">
-                        <div class="mdm-settings-box">
-                            <h2><?php _e('Automatic Updates', 'membership-discount-manager'); ?></h2>
-                            <div class="inside">
-                                <p><?php _e('The plugin automatically updates membership tiers and discounts based on user spending patterns. Updates occur daily through WordPress cron jobs.', 'membership-discount-manager'); ?></p>
-                            </div>
-                        </div>
-
                         <div class="mdm-settings-box">
                             <h2><?php _e('Profile Fields Status', 'membership-discount-manager'); ?></h2>
                             <div class="inside">
@@ -535,7 +677,7 @@ class Admin {
                                         $exists = $fields_status[$slug];
                                         $status_icon = $exists ? '✓' : '✗';
                                         $status_color = $exists ? 'green' : 'red';
-                                    ?>
+                                        ?>
                                         <tr>
                                             <th scope="row">
                                                 <?php echo esc_html($name); ?>
@@ -604,7 +746,35 @@ class Admin {
      * Render tier settings section
      */
     private function render_tier_settings() {
-        $tier_settings = get_option('mdm_tier_settings');
+        $default_settings = array(
+            'none' => array(
+                'min_spend' => 0,
+                'discount' => 0,
+            ),
+            'bronze' => array(
+                'min_spend' => 500,
+                'discount' => 5,
+            ),
+            'silver' => array(
+                'min_spend' => 1000,
+                'discount' => 10,
+            ),
+            'gold' => array(
+                'min_spend' => 5000,
+                'discount' => 15,
+            ),
+            'platinum' => array(
+                'min_spend' => 10000,
+                'discount' => 20,
+            ),
+        );
+        
+        $tier_settings = get_option('mdm_tier_settings', $default_settings);
+        
+        if (empty($tier_settings) || !is_array($tier_settings)) {
+            $tier_settings = $default_settings;
+            update_option('mdm_tier_settings', $default_settings);
+        }
         ?>
         <table class="form-table">
             <?php foreach ($tier_settings as $tier => $settings) : ?>
@@ -640,7 +810,13 @@ class Admin {
                     <button type="button" id="mdm-sync-fields" class="button">
                         <?php _e('Sync Now', 'membership-discount-manager'); ?>
                     </button>
-                    <span id="mdm-sync-status" class="spinner" style="float: none; margin-left: 10px;"></span>
+                    <span class="spinner" style="float: none; margin-left: 10px;"></span>
+                    <div id="mdm-sync-progress" class="hidden" style="margin-top: 10px;">
+                        <div class="mdm-progress-bar">
+                            <div class="mdm-progress-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="mdm-progress-status"></div>
+                    </div>
                     <p class="description"><?php _e('Synchronize membership fields for all users', 'membership-discount-manager'); ?></p>
                 </td>
             </tr>
@@ -652,36 +828,61 @@ class Admin {
      * Handle options page form submission
      */
     public function handle_options_submission() {
-        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'mdm_options_nonce')) {
+        // Check if this is our settings action
+        if (!isset($_POST['action']) || $_POST['action'] !== 'mdm_save_settings') {
             return;
         }
 
+        // Verify nonce
+        if (!isset($_POST['mdm_settings_nonce']) || !wp_verify_nonce($_POST['mdm_settings_nonce'], 'mdm_save_settings')) {
+            wp_die(__('Security check failed', 'membership-discount-manager'));
+        }
+
+        // Check permissions
         if (!current_user_can('manage_options')) {
-            return;
+            wp_die(__('You do not have sufficient permissions to access this page.', 'membership-discount-manager'));
         }
 
-        // Save tier settings
-        if (isset($_POST['tier'])) {
-            $tier_settings = $this->sanitize_tier_settings($_POST['tier']);
-            update_option('mdm_tier_settings', $tier_settings);
-        }
+        // Get current tab
+        $current_tab = isset($_POST['tab']) ? sanitize_text_field($_POST['tab']) : 'general';
 
-        // Save batch size
+        // General tab settings
+        if ($current_tab === 'general') {
+            if (isset($_POST['mdm_tier_settings'])) {
+                update_option('mdm_tier_settings', $this->sanitize_tier_settings($_POST['mdm_tier_settings']));
+            }
         if (isset($_POST['mdm_sync_batch_size'])) {
-            $batch_size = $this->sanitize_batch_size($_POST['mdm_sync_batch_size']);
-            update_option('mdm_sync_batch_size', $batch_size);
+                update_option('mdm_sync_batch_size', $this->sanitize_batch_size($_POST['mdm_sync_batch_size']));
+            }
         }
-
-        // Save logging settings
+        // Automation tab settings
+        else if ($current_tab === 'automation') {
+            update_option('mdm_auto_calc_enabled', isset($_POST['mdm_auto_calc_enabled']));
+            if (isset($_POST['mdm_auto_calc_frequency'])) {
+                update_option('mdm_auto_calc_frequency', sanitize_text_field($_POST['mdm_auto_calc_frequency']));
+            }
+        }
+        // Debug tab settings
+        else if ($current_tab === 'debug') {
         update_option('mdm_logging_enabled', isset($_POST['mdm_logging_enabled']));
         update_option('mdm_debug_mode', isset($_POST['mdm_debug_mode']));
+        }
 
+        // Add settings updated message
         add_settings_error(
             'mdm_messages',
             'mdm_settings_updated',
             __('Settings saved successfully.', 'membership-discount-manager'),
             'updated'
         );
+
+        // Redirect back to the settings page
+        wp_redirect(add_query_arg(array(
+            'page' => 'nestwork-options',
+            'tab' => $current_tab,
+            'settings-updated' => 1
+        ), admin_url('admin.php')));
+        exit;
     }
 
     /**
@@ -729,266 +930,123 @@ class Admin {
     }
 
     /**
-     * Core function to sync spending data and tier for a single user
-     * 
-     * @param int $user_id The user ID to sync
-     * @return array|WP_Error Returns array of updated data or WP_Error on failure
-     */
-    private function sync_user_spending_data($user_id) {
-        try {
-            global $wpdb;
-
-            // Verify user has membership
-            $has_membership = $wpdb->get_var($wpdb->prepare("
-                SELECT COUNT(*)
-                FROM {$wpdb->posts}
-                WHERE post_type = 'wc_user_membership'
-                AND post_author = %d
-                AND post_status IN ('wcm-active', 'wcm-expired', 'wcm-cancelled', 'wcm-pending', 'publish')
-            ", $user_id));
-
-            if (!$has_membership) {
-                return new \WP_Error('no_membership', 'User has no memberships');
-            }
-
-            // Get tier settings from options
-            $tier_settings = get_option('mdm_tier_settings', array(
-                'none' => array('min_spend' => 0, 'discount' => 0),
-                'bronze' => array('min_spend' => 349, 'discount' => 5),
-                'silver' => array('min_spend' => 500, 'discount' => 10),
-                'gold' => array('min_spend' => 1000, 'discount' => 15),
-                'platinum' => array('min_spend' => 1500, 'discount' => 20)
-            ));
-
-            // Sort tiers by min_spend in descending order
-            uasort($tier_settings, function($a, $b) {
-                return $b['min_spend'] - $a['min_spend'];
-            });
-
-            // Get all-time spending
-            $all_time_spending = $wpdb->get_var($wpdb->prepare("
-                SELECT ROUND(SUM(os.net_total), 2) as total_net
-                FROM {$wpdb->prefix}wc_order_stats AS os
-                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE cl.user_id = %d
-                AND os.status = 'wc-completed'
-            ", $user_id));
-
-            // Get last year's spending
-            $last_year_spending = $wpdb->get_var($wpdb->prepare("
-                SELECT ROUND(SUM(os.net_total), 2) as total_net_last_year
-                FROM {$wpdb->prefix}wc_order_stats AS os
-                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE cl.user_id = %d
-                AND os.status = 'wc-completed'
-                AND os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
-            ", $user_id));
-
-            // Determine appropriate tier
-            $current_tier = 'none';
-            $all_time_spending = floatval($all_time_spending ?: 0);
-
-            foreach ($tier_settings as $tier => $settings) {
-                if ($all_time_spending >= $settings['min_spend']) {
-                    $current_tier = ucfirst($tier);
-                    break;
-                }
-            }
-
-            // Update user meta
-            update_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', $all_time_spending);
-            update_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', $last_year_spending ?: 0);
-            update_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', $current_tier);
-            update_user_meta($user_id, '_wc_memberships_profile_field_discount_last_sync', current_time('mysql'));
-
-            $this->logger->debug('Updated user profile fields', array(
-                'user_id' => $user_id,
-                'all_time_spend' => $all_time_spending,
-                'last_year_spend' => $last_year_spending ?: 0,
-                'assigned_tier' => $current_tier
-            ));
-
-            return array(
-                'user_id' => $user_id,
-                'all_time_spend' => $all_time_spending,
-                'last_year_spend' => $last_year_spending ?: 0,
-                'assigned_tier' => $current_tier,
-                'sync_time' => current_time('mysql')
-            );
-
-        } catch (\Exception $e) {
-            $this->logger->error('Error syncing user data', array(
-                'user_id' => $user_id,
-                'error' => $e->getMessage()
-            ));
-            return new \WP_Error('sync_error', $e->getMessage());
-        }
-    }
-
-    /**
-     * Sync all users with memberships
-     * 
-     * @return array Stats about the sync process
-     */
-    public function sync_all_users() {
-        global $wpdb;
-
-        try {
-            // Get all users with memberships
-            $users = $wpdb->get_col("
-                SELECT DISTINCT post_author
-                FROM {$wpdb->posts}
-                WHERE post_type = 'wc_user_membership'
-                AND post_status IN ('wcm-active', 'wcm-expired', 'wcm-cancelled', 'wcm-pending', 'publish')
-            ");
-
-            $stats = array(
-                'total' => count($users),
-                'processed' => 0,
-                'success' => 0,
-                'failed' => 0
-            );
-
-            foreach ($users as $user_id) {
-                $result = $this->sync_user_spending_data($user_id);
-                $stats['processed']++;
-                
-                if (is_wp_error($result)) {
-                    $stats['failed']++;
-                } else {
-                    $stats['success']++;
-                }
-            }
-
-            update_option('mdm_last_fields_sync', current_time('mysql'));
-            $this->logger->info('Completed full sync', $stats);
-
-            return $stats;
-
-        } catch (\Exception $e) {
-            $this->logger->error('Full sync failed', array(
-                'error' => $e->getMessage()
-            ));
-            return new \WP_Error('sync_error', $e->getMessage());
-        }
-    }
-
-    /**
-     * Sync user data when an order is completed
-     * 
-     * @param int $order_id WooCommerce order ID
-     * @return array|WP_Error Result of the sync operation
-     */
-    public function sync_order_user($order_id) {
-        try {
-            $order = wc_get_order($order_id);
-            if (!$order) {
-                throw new \Exception('Order not found');
-            }
-
-            $user_id = $order->get_user_id();
-            if (!$user_id) {
-                throw new \Exception('Order has no associated user');
-            }
-
-            return $this->sync_user_spending_data($user_id);
-
-        } catch (\Exception $e) {
-            $this->logger->error('Order sync failed', array(
-                'order_id' => $order_id,
-                'error' => $e->getMessage()
-            ));
-            return new \WP_Error('sync_error', $e->getMessage());
-        }
-    }
-
-    /**
-     * Modified AJAX handler to use the core sync function with batch processing
+     * AJAX handler for syncing membership fields
      */
     public function ajax_sync_membership_fields() {
         try {
             check_ajax_referer('mdm-admin-nonce', 'nonce');
 
             if (!current_user_can('manage_woocommerce')) {
-                throw new \Exception('Insufficient permissions');
+                $this->logger->error('Sync attempt with insufficient permissions');
+                wp_send_json_error('Insufficient permissions');
+                return;
             }
 
-            // Get batch parameters
+            global $wpdb;
+
             $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
             $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 20;
+            $batch_size = min(max($batch_size, 1), 100); // Ensure batch size is between 1 and 100
 
-            // Check if sync is already running
-            $sync_running = get_transient('mdm_sync_in_progress');
-            if ($sync_running && $offset === 0) {
-                throw new \Exception('Sync already in progress. Please wait for it to complete.');
-            }
+            $this->logger->info('Starting sync batch', array(
+                'offset' => $offset,
+                'batch_size' => $batch_size
+            ));
 
-            // Set sync in progress flag only for the first batch
-            if ($offset === 0) {
-                set_transient('mdm_sync_in_progress', true, 5 * MINUTE_IN_SECONDS);
-            }
+            // Get total number of users with orders
+            $total_query = "
+                SELECT COUNT(DISTINCT cl.user_id) as total
+                FROM {$wpdb->prefix}wc_order_stats AS os
+                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
+                WHERE os.status = 'wc-completed'
+            ";
+            $total = $wpdb->get_var($total_query);
 
-            try {
-                global $wpdb;
+            $this->logger->info('Found total users', array(
+                'total_users' => $total
+            ));
 
-                // Get total number of users to process
-                $total_users = $wpdb->get_var("
-                    SELECT COUNT(DISTINCT post_author)
-                    FROM {$wpdb->posts}
-                    WHERE post_type = 'wc_user_membership'
-                    AND post_status IN ('wcm-active', 'wcm-expired', 'wcm-cancelled', 'wcm-pending', 'publish')
-                ");
+            // Get batch of users with their spending data
+            $users_query = $wpdb->prepare("
+                SELECT 
+                    cl.user_id,
+                    ROUND(SUM(CASE 
+                        WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+                        THEN os.total_sales 
+                        ELSE 0 
+                    END), 2) as yearly_spend,
+                    ROUND(SUM(os.total_sales), 2) as total_spend
+                FROM {$wpdb->prefix}wc_order_stats AS os
+                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
+                WHERE os.status = 'wc-completed'
+                GROUP BY cl.user_id
+                LIMIT %d, %d
+            ", $offset, $batch_size);
 
-                // Get batch of users
-                $users = $wpdb->get_col($wpdb->prepare("
-                    SELECT DISTINCT post_author
-                    FROM {$wpdb->posts}
-                    WHERE post_type = 'wc_user_membership'
-                    AND post_status IN ('wcm-active', 'wcm-expired', 'wcm-cancelled', 'wcm-pending', 'publish')
-                    ORDER BY post_author
-                    LIMIT %d OFFSET %d
-                ", $batch_size, $offset));
+            $users = $wpdb->get_results($users_query);
+            $processed = 0;
+            $updated = 0;
+            $skipped = 0;
 
-                $stats = array(
-                    'total' => (int)$total_users,
-                    'processed' => $offset + count($users),
-                    'success' => 0,
-                    'failed' => 0
-                );
+            foreach ($users as $user) {
+                $this->logger->debug('Processing user', array(
+                    'user_id' => $user->user_id,
+                    'yearly_spend' => $user->yearly_spend,
+                    'total_spend' => $user->total_spend
+                ));
 
-                foreach ($users as $user_id) {
-                    $result = $this->sync_user_spending_data($user_id);
-                    if (is_wp_error($result)) {
-                        $stats['failed']++;
-                    } else {
-                        $stats['success']++;
-                    }
-                }
+                // Update spending data
+                update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
+                update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
 
-                // If this is the last batch, clean up
-                if ($stats['processed'] >= $total_users) {
-                    delete_transient('mdm_sync_in_progress');
-                    update_option('mdm_last_fields_sync', current_time('mysql'));
-                    $this->logger->info('Completed full sync', $stats);
-                } else {
-                    $this->logger->debug('Completed batch sync', array(
-                        'batch' => $offset / $batch_size + 1,
-                        'processed' => $stats['processed'],
-                        'total' => $total_users
+                // Skip if manual override is enabled
+                $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
+                if ($manual_override === 'yes') {
+                    $this->logger->debug('Skipping user due to manual override', array(
+                        'user_id' => $user->user_id
                     ));
+                    $skipped++;
+                    continue;
                 }
 
-                wp_send_json_success($stats);
+                // Calculate and update tier
+                $old_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
+                if ($this->calculate_and_update_user_tier($user->user_id)) {
+                    $new_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
+                    $this->logger->info('Updated user tier', array(
+                        'user_id' => $user->user_id,
+                        'old_tier' => $old_tier,
+                        'new_tier' => $new_tier,
+                        'yearly_spend' => $user->yearly_spend
+                    ));
+                    $updated++;
+                }
+
+                $processed++;
+            }
+
+            $this->logger->info('Completed sync batch', array(
+                'processed' => $processed,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'offset' => $offset,
+                'total' => $total
+            ));
+
+            wp_send_json_success(array(
+                'processed' => $offset + $processed,
+                'total' => $total,
+                'batch_stats' => array(
+                    'processed' => $processed,
+                    'updated' => $updated,
+                    'skipped' => $skipped
+                )
+            ));
 
             } catch (\Exception $e) {
-                // Clear sync in progress flag on error
-                delete_transient('mdm_sync_in_progress');
-                throw $e;
-            }
-
-        } catch (\Exception $e) {
-            $this->logger->error('AJAX sync failed', array(
-                'error' => $e->getMessage()
+            $this->logger->error('Error during sync', array(
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ));
             wp_send_json_error($e->getMessage());
         }
@@ -1060,17 +1118,27 @@ class Admin {
             check_ajax_referer('mdm-admin-nonce', 'nonce');
 
             if (!current_user_can('manage_woocommerce')) {
-                throw new \Exception('Insufficient permissions');
+                throw new \Exception(__('Insufficient permissions to clear logs', 'membership-discount-manager'));
             }
 
-            $this->logger->clear_logs();
-            wp_send_json_success();
+            $result = $this->logger->clear_logs();
+            
+            if ($result) {
+                $this->logger->info('Logs cleared successfully by user');
+                wp_send_json_success(array(
+                    'message' => __('Debug logs have been cleared successfully.', 'membership-discount-manager')
+                ));
+            } else {
+                throw new \Exception(__('Failed to clear some or all log files', 'membership-discount-manager'));
+            }
 
         } catch (\Exception $e) {
             $this->logger->error('Failed to clear logs', array(
                 'error' => $e->getMessage()
             ));
-            wp_send_json_error($e->getMessage());
+            wp_send_json_error(array(
+                'message' => $e->getMessage()
+            ));
         }
     }
 
@@ -1138,5 +1206,187 @@ class Admin {
         $total_pages = ceil($total_items / $per_page);
 
         include MDM_PLUGIN_DIR . 'templates/all-memberships.php';
+    }
+
+    /**
+     * Calculate and update user tier based on spending
+     *
+     * @param int $user_id
+     * @return bool
+     */
+    private function calculate_and_update_user_tier($user_id) {
+        try {
+            $is_cron = defined('DOING_CRON') && DOING_CRON;
+            $log_prefix = $is_cron ? '[CRON]' : '[MANUAL]';
+
+            // Get user's spending data
+            $yearly_spend = get_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', true);
+            $total_spend = get_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', true);
+
+            $this->logger->debug($log_prefix . ' Calculating tier for user', array(
+                'user_id' => $user_id,
+                'yearly_spend' => $yearly_spend,
+                'total_spend' => $total_spend
+            ));
+
+            // Get tier settings
+            $tier_settings = get_option('mdm_tier_settings', array());
+            if (empty($tier_settings)) {
+                throw new \Exception('Tier settings not found');
+            }
+
+            // Calculate appropriate tier based on yearly spend
+            $current_tier = 'None';
+            foreach (array('platinum', 'gold', 'silver', 'bronze') as $tier_key) {
+                if (isset($tier_settings[$tier_key]) && $yearly_spend >= $tier_settings[$tier_key]['min_spend']) {
+                    // Convert first letter to uppercase
+                    $current_tier = ucfirst($tier_key);
+                    break;
+                }
+            }
+
+            $old_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
+            
+            // Get user details for logging
+            $user = get_user_by('id', $user_id);
+            $user_email = $user ? $user->user_email : 'Unknown';
+
+            // Only update if tier has changed (case-insensitive comparison)
+            if (strcasecmp($old_tier, $current_tier) !== 0) {
+                $this->logger->info($log_prefix . ' Updating user tier', array(
+                    'user_id' => $user_id,
+                    'user_email' => $user_email,
+                    'old_tier' => $old_tier,
+                    'new_tier' => $current_tier,
+                    'yearly_spend' => $yearly_spend,
+                    'total_spend' => $total_spend,
+                    'tier_thresholds' => $tier_settings,
+                    'update_source' => $is_cron ? 'cron' : 'manual_sync'
+                ));
+
+                // Update user's tier
+                update_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', $current_tier);
+                
+                // Update last sync timestamp
+                update_user_meta($user_id, '_wc_memberships_profile_field_last_updated', current_time('mysql'));
+
+                return true;
+            }
+
+            $this->logger->debug($log_prefix . ' No tier change needed', array(
+                'user_id' => $user_id,
+                'user_email' => $user_email,
+                'current_tier' => $current_tier,
+                'yearly_spend' => $yearly_spend,
+                'update_source' => $is_cron ? 'cron' : 'manual_sync'
+            ));
+
+            return false;
+
+        } catch (\Exception $e) {
+            $log_prefix = (defined('DOING_CRON') && DOING_CRON) ? '[ERROR][CRON]' : '[ERROR][MANUAL]';
+            $this->logger->error($log_prefix . ' Error calculating user tier', array(
+                'user_id' => $user_id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'update_source' => (defined('DOING_CRON') && DOING_CRON) ? 'cron' : 'manual_sync'
+            ));
+            return false;
+        }
+    }
+
+    /**
+     * Display last run status
+     */
+    private function display_last_run_status() {
+        $last_run = get_option('mdm_auto_calc_last_run', false);
+        $last_run_stats = get_option('mdm_auto_calc_last_run_stats', array());
+
+        echo '<h3>' . __('Last Run Status', 'membership-discount-manager') . '</h3>';
+        echo '<table class="form-table">';
+        
+        // Last Run Time
+        echo '<tr>';
+        echo '<th>' . __('Last Run', 'membership-discount-manager') . '</th>';
+        echo '<td>';
+        if (isset($last_run_stats['last_run'])) {
+            echo esc_html($last_run_stats['last_run']);
+        } elseif ($last_run) {
+            echo esc_html(wp_date('Y-m-d H:i:s', $last_run));
+        } else {
+            echo __('Never', 'membership-discount-manager');
+        }
+        echo '</td>';
+        echo '</tr>';
+
+        // Current Status
+        echo '<tr>';
+        echo '<th>' . __('Status', 'membership-discount-manager') . '</th>';
+        echo '<td>';
+        if (isset($last_run_stats['is_running']) && $last_run_stats['is_running']) {
+            echo '<span style="color: blue;">' . __('Running', 'membership-discount-manager') . '</span>';
+            if (isset($last_run_stats['progress'])) {
+                echo ' (' . esc_html($last_run_stats['progress']) . '%)';
+            }
+        } else {
+            echo '<span style="color: green;">' . __('Completed', 'membership-discount-manager') . '</span>';
+        }
+        echo '</td>';
+        echo '</tr>';
+
+        // Records Processed
+        if (isset($last_run_stats['records_processed'])) {
+            echo '<tr>';
+            echo '<th>' . __('Records Processed', 'membership-discount-manager') . '</th>';
+            echo '<td>' . esc_html($last_run_stats['records_processed']) . '</td>';
+            echo '</tr>';
+        }
+
+        // Records Updated
+        if (isset($last_run_stats['records_updated'])) {
+            echo '<tr>';
+            echo '<th>' . __('Records Updated', 'membership-discount-manager') . '</th>';
+            echo '<td>' . esc_html($last_run_stats['records_updated']) . '</td>';
+            echo '</tr>';
+        }
+
+        // Records Skipped
+        if (isset($last_run_stats['records_skipped'])) {
+            echo '<tr>';
+            echo '<th>' . __('Records Skipped', 'membership-discount-manager') . '</th>';
+            echo '<td>' . esc_html($last_run_stats['records_skipped']) . '</td>';
+            echo '</tr>';
+        }
+
+        // Execution Time
+        if (isset($last_run_stats['execution_time'])) {
+            echo '<tr>';
+            echo '<th>' . __('Execution Time', 'membership-discount-manager') . '</th>';
+            echo '<td>' . esc_html($last_run_stats['execution_time']) . ' ' . __('seconds', 'membership-discount-manager') . '</td>';
+            echo '</tr>';
+        }
+
+        // Error Message (if any)
+        if (isset($last_run_stats['error']) && $last_run_stats['error']) {
+            echo '<tr>';
+            echo '<th>' . __('Error', 'membership-discount-manager') . '</th>';
+            echo '<td class="error">' . esc_html($last_run_stats['error_message']) . '</td>';
+            echo '</tr>';
+        }
+
+        // Next Scheduled Run
+        $next_run = wp_next_scheduled('mdm_auto_calculation');
+        echo '<tr>';
+        echo '<th>' . __('Next Scheduled Run', 'membership-discount-manager') . '</th>';
+        echo '<td>';
+        if ($next_run) {
+            echo esc_html(wp_date('Y-m-d H:i:s', $next_run));
+        } else {
+            echo __('Not scheduled', 'membership-discount-manager');
+        }
+        echo '</td>';
+        echo '</tr>';
+
+        echo '</table>';
     }
 } 

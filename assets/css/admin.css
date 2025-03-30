@@ -157,4 +157,35 @@
     .mdm-settings-box .form-table td input[type="number"] {
         max-width: 100%;
     }
+}
+
+.mdm-progress-bar {
+    width: 100%;
+    height: 20px;
+    background-color: #f0f0f1;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.mdm-progress-fill {
+    height: 100%;
+    background-color: #2271b1;
+    transition: width 0.3s ease-in-out;
+}
+
+.mdm-progress-status {
+    font-size: 13px;
+    color: #50575e;
+    margin-bottom: 10px;
+}
+
+/* Hide progress bar initially */
+.hidden {
+    display: none;
+}
+
+/* Spinner styles */
+.spinner.is-active {
+    visibility: visible;
 } 

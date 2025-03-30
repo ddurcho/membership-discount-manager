@@ -30,6 +30,8 @@ require_once MDM_PLUGIN_DIR . 'includes/class-mdm-activator.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-deactivator.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-logger.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-setup.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-admin.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-cron.php';
 
 /**
  * Check if WooCommerce is active
@@ -95,6 +97,17 @@ function mdm_activate() {
     // Initialize default options
     add_option('mdm_logging_enabled', true);
     add_option('mdm_debug_mode', false);
+
+    MembershipDiscountManager\Activator::activate();
+}
+
+/**
+ * Plugin deactivation hook
+ */
+function mdm_deactivate() {
+    MembershipDiscountManager\Deactivator::deactivate();
+    // Clear scheduled cron jobs
+    wp_clear_scheduled_hook('mdm_auto_calculation');
 }
 
 /**
@@ -107,14 +120,13 @@ function mdm_init() {
         return;
     }
 
-    // Load required files
-    require_once MDM_PLUGIN_DIR . 'includes/class-mdm-admin.php';
-    require_once MDM_PLUGIN_DIR . 'includes/class-mdm-discount-handler.php';
+    // Initialize classes
+    new MembershipDiscountManager\Admin();
+    new MembershipDiscountManager\Setup();
+    new MembershipDiscountManager\Cron();
 
-    // Initialize admin
-    if (is_admin()) {
-        new MembershipDiscountManager\Admin();
-    }
+    // Load required files
+    require_once MDM_PLUGIN_DIR . 'includes/class-mdm-discount-handler.php';
 
     // Initialize discount handler
     new MembershipDiscountManager\Discount_Handler();
@@ -125,6 +137,9 @@ function mdm_init() {
 
 // Register activation hook
 register_activation_hook(__FILE__, 'mdm_activate');
+
+// Register deactivation hook
+register_deactivation_hook(__FILE__, 'mdm_deactivate');
 
 // Initialize plugin after WooCommerce is loaded
 add_action('plugins_loaded', 'mdm_init');
@@ -148,14 +163,4 @@ spl_autoload_register(function($class) {
 });
 
 // Hook into the initialization action
-add_action('mdm_initialize_tiers', array('MembershipDiscountManager\\Activator', 'initialize_member_tiers'));
-
-// Activation hook
-register_activation_hook(__FILE__, array('MembershipDiscountManager\\Activator', 'activate'));
-
-// Deactivation hook
-register_deactivation_hook(__FILE__, array('MembershipDiscountManager\\Deactivator', 'deactivate'));
-
-// Add in the plugin initialization
-$mdm_setup = new \MembershipDiscountManager\Setup();
-$mdm_setup->init(); 
+add_action('mdm_initialize_tiers', array('MembershipDiscountManager\\Activator', 'initialize_member_tiers')); 
