@@ -32,6 +32,7 @@ require_once MDM_PLUGIN_DIR . 'includes/class-mdm-logger.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-setup.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-admin.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-cron.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-shortcodes.php';
 
 /**
  * Check if WooCommerce is active
@@ -141,6 +142,10 @@ function mdm_init() {
     if (!is_admin() || wp_doing_ajax()) {
         new MembershipDiscountManager\Discount_Handler();
     }
+
+    // Initialize plugin components
+    $mdm_logger = new MembershipDiscountManager\Logger();
+    $mdm_shortcodes = new MembershipDiscountManager\Shortcodes();
 
     // Only log initialization in debug mode
     if (get_option('mdm_debug_mode', false)) {
