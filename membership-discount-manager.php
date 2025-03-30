@@ -114,6 +114,13 @@ function mdm_deactivate() {
  * Initialize plugin
  */
 function mdm_init() {
+    static $initialized = false;
+
+    // Prevent multiple initializations
+    if ($initialized) {
+        return;
+    }
+
     // Check dependencies
     if (!mdm_is_woocommerce_active() || !mdm_is_wc_memberships_active()) {
         add_action('admin_notices', 'mdm_admin_notice_missing_dependencies');
@@ -121,18 +128,26 @@ function mdm_init() {
     }
 
     // Initialize classes
-    new MembershipDiscountManager\Admin();
-    new MembershipDiscountManager\Setup();
-    new MembershipDiscountManager\Cron();
+    global $mdm_admin, $mdm_setup, $mdm_cron;
+
+    $mdm_admin = new MembershipDiscountManager\Admin();
+    $mdm_setup = new MembershipDiscountManager\Setup();
+    $mdm_cron = new MembershipDiscountManager\Cron();
 
     // Load required files
     require_once MDM_PLUGIN_DIR . 'includes/class-mdm-discount-handler.php';
 
-    // Initialize discount handler
-    new MembershipDiscountManager\Discount_Handler();
+    // Initialize discount handler only if needed
+    if (!is_admin() || wp_doing_ajax()) {
+        new MembershipDiscountManager\Discount_Handler();
+    }
 
-    // Log initialization
-    error_log('🎯 MDM: Plugin initialized with Discount Handler');
+    // Only log initialization in debug mode
+    if (get_option('mdm_debug_mode', false)) {
+        error_log('🎯 MDM: Plugin initialized');
+    }
+
+    $initialized = true;
 }
 
 // Register activation hook

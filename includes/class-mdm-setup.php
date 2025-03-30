@@ -24,15 +24,24 @@ class Setup {
         
         // Initialize after WooCommerce is fully loaded
         \add_action('woocommerce_init', array($this, 'init'), 20);
-        \add_action('wp_loaded', array($this, 'late_init'), 20);
         
-        //$this->logger->info('MDM Setup constructor called');
+        // Only add late_init if we're in a frontend request or AJAX
+        if (!\is_admin() || \wp_doing_ajax()) {
+            \add_action('wp_loaded', array($this, 'late_init'), 20);
+        }
     }
 
     /**
      * Initialize the setup
      */
     public function init() {
+        static $initialized = false;
+
+        // Prevent multiple initializations
+        if ($initialized) {
+            return;
+        }
+
         // Check if WooCommerce is active
         if (!\class_exists('WooCommerce')) {
             $this->logger->error('WooCommerce not active');
@@ -41,7 +50,6 @@ class Setup {
 
         // Check if WooCommerce Memberships is active
         if (!\class_exists('WC_Memberships')) {
-            //$this->logger->error('WooCommerce Memberships not active');
             return;
         }
 
@@ -60,22 +68,41 @@ class Setup {
             $this->init_discount_handler();
         }
 
-        //$this->logger->info('MDM Setup init completed');
+        $initialized = true;
     }
 
     /**
      * Late initialization
      */
     public function late_init() {
+        // Use transient to prevent multiple initializations within a short time period
+        $init_lock = get_transient('mdm_late_init_lock');
+        if ($init_lock) {
+            return;
+        }
+        
+        // Set a transient lock for 10 seconds
+        set_transient('mdm_late_init_lock', true, 10);
+
         if (!\function_exists('WC')) {
             return;
         }
 
-        $this->logger->info('MDM Late init started', [
-            'is_checkout' => \function_exists('is_checkout') ? \is_checkout() : 'function_not_exists',
-            'is_cart' => \function_exists('is_cart') ? \is_cart() : 'function_not_exists',
-            'user_id' => \get_current_user_id()
-        ]);
+        // Only log late init in debug mode and if something changed
+        if (get_option('mdm_debug_mode', false)) {
+            $current_state = array(
+                'is_checkout' => \function_exists('is_checkout') ? \is_checkout() : false,
+                'is_cart' => \function_exists('is_cart') ? \is_cart() : false,
+                'user_id' => \get_current_user_id(),
+                'request_uri' => isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : ''
+            );
+
+            $last_state = get_transient('mdm_late_init_state');
+            if ($last_state !== $current_state) {
+                $this->logger->info('MDM Late init started', $current_state);
+                set_transient('mdm_late_init_state', $current_state, 60);
+            }
+        }
 
         // Reinitialize discount handler if needed
         if (($this->is_cart_or_checkout() || $this->is_ajax_cart_update()) && !$this->discount_handler) {
@@ -87,12 +114,20 @@ class Setup {
      * Initialize the discount handler
      */
     private function init_discount_handler() {
+        // Use transient to prevent multiple initializations
+        $handler_lock = get_transient('mdm_discount_handler_lock');
+        if ($handler_lock) {
+            return;
+        }
+
         if (!$this->discount_handler && \function_exists('WC')) {
-            //$this->logger->info('Initializing Discount Handler');
             $this->discount_handler = new Discount_Handler();
             
             // Let the Discount_Handler initialize its own hooks
             $this->discount_handler->init_hooks();
+
+            // Set a transient lock for 10 seconds
+            set_transient('mdm_discount_handler_lock', true, 10);
         }
     }
 

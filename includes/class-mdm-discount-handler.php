@@ -27,23 +27,16 @@ class Discount_Handler {
             return;
         }
 
-        $this->logger = new Logger();
+        // Initialize logger
+        if (!isset($this->logger)) {
+            $this->logger = new Logger();
+        }
         
-        // Early debug logging
-        error_log('🚀 MDM: Discount Handler Constructor Called');
-        //$this->logger->info('🚀 MDM: Discount Handler Constructor Called');
+        // Early debug logging only if debug mode is enabled
+        if (get_option('mdm_debug_mode', false)) {
+            error_log('🚀 MDM: Discount Handler Constructor Called');
+        }
         
-        // Log WordPress loading phase
-        // $this->logger->info('🔄 WordPress Loading Phase', [
-        //     'did_action_init' => did_action('init'),
-        //     'did_action_wp_loaded' => did_action('wp_loaded'),
-        //     'did_action_woocommerce_init' => did_action('woocommerce_init'),
-        //     'wc_loaded' => defined('WC_LOADED'),
-        //     'is_admin' => is_admin(),
-        //     'doing_ajax' => wp_doing_ajax(),
-        //     'current_filter' => current_filter()
-        // ]);
-
         // Register our hooks after WooCommerce is loaded
         if (did_action('woocommerce_init')) {
             $this->init_hooks();
@@ -57,22 +50,42 @@ class Discount_Handler {
         add_action('wp', array($this, 'early_checkout_debug'));
 
         self::$initialized = true;
-        //$this->logger->debug('Discount Handler initialized');
     }
 
     /**
      * Early checkout debug
      */
     public function early_checkout_debug() {
-        error_log('🔍 MDM: Early Checkout Debug Called');
-        $this->logger->info('🔍 MDM: Early Checkout Debug', [
+        // Only proceed if debug mode is enabled
+        if (!get_option('mdm_debug_mode', false)) {
+            return;
+        }
+
+        // Use transient to prevent multiple debug logs within a short time period
+        $debug_lock = get_transient('mdm_early_checkout_debug_lock');
+        if ($debug_lock) {
+            return;
+        }
+
+        // Set a transient lock for 5 seconds
+        set_transient('mdm_early_checkout_debug_lock', true, 5);
+
+        // Collect current state
+        $current_state = array(
             'is_checkout' => is_checkout(),
             'is_cart' => is_cart(),
             'user_id' => get_current_user_id(),
             'request_uri' => $_SERVER['REQUEST_URI'],
             'wc_loaded' => defined('WC_LOADED'),
             'cartflows_active' => class_exists('\\CartFlows\\Core')
-        ]);
+        );
+
+        // Only log if state has changed
+        $last_state = get_transient('mdm_early_checkout_state');
+        if ($last_state !== $current_state) {
+            $this->logger->info('🔍 MDM: Early Checkout Debug', $current_state);
+            set_transient('mdm_early_checkout_state', $current_state, 60);
+        }
     }
 
     /**
@@ -364,11 +377,19 @@ class Discount_Handler {
         $discount_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
         $tier_settings = get_option('mdm_tier_settings', array());
 
-        $this->logger->debug('Checking discount tier', [
-            'user_id' => $user_id,
-            'discount_tier' => $discount_tier,
-            'available_tiers' => array_keys($tier_settings)
-        ]);
+        // Ensure logger is initialized
+        if (!isset($this->logger)) {
+            $this->logger = new Logger();
+        }
+
+        // Only log if debug mode is enabled
+        if (get_option('mdm_debug_mode', false)) {
+            $this->logger->debug('Checking discount tier', [
+                'user_id' => $user_id,
+                'discount_tier' => $discount_tier,
+                'available_tiers' => array_keys($tier_settings)
+            ]);
+        }
 
         // Return false if tier is None or empty
         if (empty($discount_tier) || $discount_tier === 'None') {
@@ -386,11 +407,14 @@ class Discount_Handler {
                 'percentage' => $normalized_settings[$normalized_tier]['discount']
             );
             
-            $this->logger->info('User discount retrieved', [
-                'user_id' => $user_id,
-                'tier' => $discount_tier,
-                'percentage' => $normalized_settings[$normalized_tier]['discount']
-            ]);
+            // Only log if debug mode is enabled
+            if (get_option('mdm_debug_mode', false)) {
+                $this->logger->info('User discount retrieved', [
+                    'user_id' => $user_id,
+                    'tier' => $discount_tier,
+                    'percentage' => $normalized_settings[$normalized_tier]['discount']
+                ]);
+            }
             
             return $discount_info;
         }

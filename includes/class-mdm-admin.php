@@ -949,6 +949,112 @@ class Admin {
     }
 
     /**
+     * Process a batch of user syncs
+     * 
+     * @param string $source Source of the sync (MANUAL or CRON)
+     * @param int $offset Starting offset for the batch
+     * @param int $batch_size Size of the batch to process
+     * @return array Processing results
+     */
+    private function process_sync_batch($source = 'MANUAL', $offset = 0, $batch_size = 20) {
+        global $wpdb;
+
+        $batch_size = min(max($batch_size, 1), 100); // Ensure batch size is between 1 and 100
+
+        $this->logger->info("[$source] Starting sync batch", array(
+            'offset' => $offset,
+            'batch_size' => $batch_size
+        ));
+
+        // Get total number of users with orders
+        $total_query = "
+            SELECT COUNT(DISTINCT cl.user_id) as total
+            FROM {$wpdb->prefix}wc_order_stats AS os
+            INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
+            WHERE os.status = 'wc-completed'
+        ";
+        $total = $wpdb->get_var($total_query);
+
+        $this->logger->info("[$source] Found total users", array(
+            'total_users' => $total
+        ));
+
+        // Get batch of users with their spending data
+        $users_query = $wpdb->prepare("
+            SELECT 
+                cl.user_id,
+                ROUND(SUM(CASE 
+                    WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+                    THEN os.total_sales 
+                    ELSE 0 
+                END), 2) as yearly_spend,
+                ROUND(SUM(os.total_sales), 2) as total_spend
+            FROM {$wpdb->prefix}wc_order_stats AS os
+            INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
+            WHERE os.status = 'wc-completed'
+            GROUP BY cl.user_id
+            LIMIT %d, %d
+        ", $offset, $batch_size);
+
+        $users = $wpdb->get_results($users_query);
+        $stats = array(
+            'processed' => 0,
+            'updated' => 0,
+            'skipped' => 0,
+            'total' => $total,
+            'current_offset' => $offset,
+            'is_complete' => ($offset + $batch_size) >= $total
+        );
+
+        foreach ($users as $user) {
+            $this->logger->debug("[$source] Processing user", array(
+                'user_id' => $user->user_id,
+                'yearly_spend' => $user->yearly_spend,
+                'total_spend' => $user->total_spend
+            ));
+
+            // Update spending data
+            update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
+            update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
+
+            // Skip if manual override is enabled
+            $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
+            if ($manual_override === 'yes') {
+                $this->logger->debug("[$source] Skipping user due to manual override", array(
+                    'user_id' => $user->user_id
+                ));
+                $stats['skipped']++;
+                continue;
+            }
+
+            // Calculate and update tier
+            $old_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
+            if ($this->calculate_and_update_user_tier($user->user_id)) {
+                $new_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
+                $this->logger->info("[$source] Updated user tier", array(
+                    'user_id' => $user->user_id,
+                    'old_tier' => $old_tier,
+                    'new_tier' => $new_tier,
+                    'yearly_spend' => $user->yearly_spend
+                ));
+                $stats['updated']++;
+            }
+
+            $stats['processed']++;
+        }
+
+        $this->logger->info("[$source] Completed sync batch", array(
+            'processed' => $stats['processed'],
+            'updated' => $stats['updated'],
+            'skipped' => $stats['skipped'],
+            'offset' => $offset,
+            'total' => $total
+        ));
+
+        return $stats;
+    }
+
+    /**
      * AJAX handler for syncing membership fields
      */
     public function ajax_sync_membership_fields() {
@@ -961,109 +1067,54 @@ class Admin {
                 return;
             }
 
-            global $wpdb;
-
             $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
-            $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 20;
+            $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : get_option('mdm_sync_batch_size', 20);
             $batch_size = min(max($batch_size, 1), 100); // Ensure batch size is between 1 and 100
 
-            $this->logger->info('Starting sync batch', array(
+            $this->logger->info('[MANUAL] Starting sync batch', array(
                 'offset' => $offset,
                 'batch_size' => $batch_size
             ));
 
-            // Get total number of users with orders
-            $total_query = "
-                SELECT COUNT(DISTINCT cl.user_id) as total
-                FROM {$wpdb->prefix}wc_order_stats AS os
-                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE os.status = 'wc-completed'
-            ";
-            $total = $wpdb->get_var($total_query);
-
-            $this->logger->info('Found total users', array(
-                'total_users' => $total
-            ));
-
-            // Get batch of users with their spending data
-            $users_query = $wpdb->prepare("
-                SELECT 
-                    cl.user_id,
-                    ROUND(SUM(CASE 
-                        WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
-                        THEN os.total_sales 
-                        ELSE 0 
-                    END), 2) as yearly_spend,
-                    ROUND(SUM(os.total_sales), 2) as total_spend
-                FROM {$wpdb->prefix}wc_order_stats AS os
-                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE os.status = 'wc-completed'
-                GROUP BY cl.user_id
-                LIMIT %d, %d
-            ", $offset, $batch_size);
-
-            $users = $wpdb->get_results($users_query);
-            $processed = 0;
-            $updated = 0;
-            $skipped = 0;
-
-            foreach ($users as $user) {
-                $this->logger->debug('Processing user', array(
-                    'user_id' => $user->user_id,
-                    'yearly_spend' => $user->yearly_spend,
-                    'total_spend' => $user->total_spend
-                ));
-
-                // Update spending data
-                update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
-                update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
-
-                // Skip if manual override is enabled
-                $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
-                if ($manual_override === 'yes') {
-                    $this->logger->debug('Skipping user due to manual override', array(
-                        'user_id' => $user->user_id
-                    ));
-                    $skipped++;
-                    continue;
-                }
-
-                // Calculate and update tier
-                $old_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
-                if ($this->calculate_and_update_user_tier($user->user_id)) {
-                    $new_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
-                    $this->logger->info('Updated user tier', array(
-                        'user_id' => $user->user_id,
-                        'old_tier' => $old_tier,
-                        'new_tier' => $new_tier,
-                        'yearly_spend' => $user->yearly_spend
-                    ));
-                    $updated++;
-                }
-
-                $processed++;
+            $stats = $this->process_sync_batch('MANUAL', $offset, $batch_size);
+            
+            $is_complete = ($offset + $stats['processed'] >= $stats['total']);
+            
+            $response = array(
+                'processed' => $offset + $stats['processed'],
+                'total' => $stats['total'],
+                'batch_stats' => array(
+                    'processed' => $stats['processed'],
+                    'updated' => $stats['updated'],
+                    'skipped' => $stats['skipped']
+                ),
+                'is_complete' => $is_complete
+            );
+            
+            if ($is_complete) {
+                // Add completion summary
+                $response['completion_summary'] = array(
+                    'total_processed' => $offset + $stats['processed'],
+                    'total_updated' => $stats['updated'],
+                    'total_skipped' => $stats['skipped'],
+                    'execution_time' => date('H:i:s'),
+                    'message' => sprintf(
+                        __('Sync completed successfully! Processed %d members (%d updated, %d skipped) at %s', 'membership-discount-manager'),
+                        $offset + $stats['processed'],
+                        $stats['updated'],
+                        $stats['skipped'],
+                        current_time('H:i:s')
+                    )
+                );
+                
+                // Update last sync time
+                update_option('mdm_last_fields_sync', current_time('mysql'));
             }
 
-            $this->logger->info('Completed sync batch', array(
-                'processed' => $processed,
-                'updated' => $updated,
-                'skipped' => $skipped,
-                'offset' => $offset,
-                'total' => $total
-            ));
+            wp_send_json_success($response);
 
-            wp_send_json_success(array(
-                'processed' => $offset + $processed,
-                'total' => $total,
-                'batch_stats' => array(
-                    'processed' => $processed,
-                    'updated' => $updated,
-                    'skipped' => $skipped
-                )
-            ));
-
-            } catch (\Exception $e) {
-            $this->logger->error('Error during sync', array(
+        } catch (\Exception $e) {
+            $this->logger->error('[MANUAL] Error during sync', array(
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ));
@@ -1407,5 +1458,93 @@ class Admin {
         echo '</tr>';
 
         echo '</table>';
+    }
+
+    /**
+     * Run automatic calculation via cron
+     */
+    public function run_auto_calculation() {
+        try {
+            if (!get_option('mdm_auto_calc_enabled', false)) {
+                $this->logger->info('[CRON] Auto calculation is disabled');
+                return;
+            }
+
+            $this->logger->info('[CRON] Starting automatic calculation');
+
+            // Get batch size from settings
+            $batch_size = get_option('mdm_sync_batch_size', 20);
+            $offset = 0;
+            $total_processed = 0;
+            $total_updated = 0;
+            $total_skipped = 0;
+
+            // Track execution time
+            $start_time = microtime(true);
+
+            // Update running status
+            update_option('mdm_auto_calc_last_run_stats', array(
+                'last_run' => current_time('mysql'),
+                'is_running' => true,
+                'progress' => 0
+            ));
+
+            do {
+                $stats = $this->process_sync_batch('CRON', $offset, $batch_size);
+                
+                $total_processed += $stats['processed'];
+                $total_updated += $stats['updated'];
+                $total_skipped += $stats['skipped'];
+                
+                // Update progress
+                $progress = min(100, round(($offset + $stats['processed']) / $stats['total'] * 100));
+                update_option('mdm_auto_calc_last_run_stats', array(
+                    'last_run' => current_time('mysql'),
+                    'is_running' => true,
+                    'progress' => $progress,
+                    'records_processed' => $total_processed,
+                    'records_updated' => $total_updated,
+                    'records_skipped' => $total_skipped
+                ));
+
+                $offset += $batch_size;
+            } while (!$stats['is_complete']);
+
+            $execution_time = microtime(true) - $start_time;
+
+            // Update final stats
+            update_option('mdm_auto_calc_last_run', time());
+            update_option('mdm_auto_calc_last_run_stats', array(
+                'last_run' => current_time('mysql'),
+                'is_running' => false,
+                'progress' => 100,
+                'records_processed' => $total_processed,
+                'records_updated' => $total_updated,
+                'records_skipped' => $total_skipped,
+                'execution_time' => round($execution_time, 2),
+                'error' => false
+            ));
+
+            $this->logger->info('[CRON] Completed automatic calculation', array(
+                'total_processed' => $total_processed,
+                'total_updated' => $total_updated,
+                'total_skipped' => $total_skipped,
+                'execution_time' => round($execution_time, 2)
+            ));
+
+        } catch (\Exception $e) {
+            $this->logger->error('[CRON] Error during automatic calculation', array(
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ));
+
+            // Update error status
+            update_option('mdm_auto_calc_last_run_stats', array(
+                'last_run' => current_time('mysql'),
+                'is_running' => false,
+                'error' => true,
+                'error_message' => $e->getMessage()
+            ));
+        }
     }
 } 

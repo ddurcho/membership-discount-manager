@@ -160,24 +160,38 @@
 }
 
 .mdm-progress-bar {
-    width: 100%;
+    margin-top: 10px;
     height: 20px;
-    background-color: #f0f0f1;
-    border-radius: 3px;
+    background: #f0f0f1;
+    border-radius: 10px;
     overflow: hidden;
-    margin-bottom: 10px;
+    width: 100%;
+    max-width: 400px;
 }
 
 .mdm-progress-fill {
     height: 100%;
-    background-color: #2271b1;
-    transition: width 0.3s ease-in-out;
+    background: #2271b1;
+    width: 0;
+    transition: width 0.3s ease;
+}
+
+.mdm-progress-fill.success {
+    background: #46b450;
+}
+
+.mdm-progress-fill.error {
+    background: #dc3232;
 }
 
 .mdm-progress-status {
-    font-size: 13px;
-    color: #50575e;
-    margin-bottom: 10px;
+    margin: 10px 0 0;
+    font-style: italic;
+}
+
+.mdm-progress-status .error {
+    color: #dc3232;
+    font-weight: bold;
 }
 
 /* Hide progress bar initially */

@@ -167,66 +167,80 @@ jQuery(document).ready(function($) {
                     batch_size: batchSize
                 },
                 success: function(response) {
-                    if (!response.success) {
-                        handleError(response.data || 'Unknown error occurred during sync');
-                        return;
-                    }
-
-                    if (!response.data || typeof response.data.processed === 'undefined' || typeof response.data.total === 'undefined') {
-                        handleError('Invalid response format from server');
-                        return;
-                    }
-
-                    var progress = Math.round((response.data.processed / response.data.total) * 100);
-                    $progressBar.css('width', progress + '%');
-                    
-                    if (response.data.processed >= response.data.total) {
-                        $status.html(
-                            'Sync complete!<br>' +
-                            'Processed ' + response.data.processed + ' records out of ' + response.data.total + '.'
-                        );
-                        $spinner.removeClass('is-active');
-                        $button.prop('disabled', false);
+                    if (response.success) {
+                        var data = response.data;
+                        var percentage = Math.round((data.processed / data.total) * 100);
                         
-                        // Reload page after 2 seconds
-                        setTimeout(function() {
-                            window.location.reload();
-                        }, 2000);
+                        // Update progress bar
+                        $progressBar.css('width', percentage + '%');
+                        
+                        // Update status message
+                        if (!data.is_complete) {
+                            $status.html(
+                                'Processing: ' + data.processed + ' / ' + data.total + 
+                                ' (' + data.batch_stats.updated + ' updated, ' + 
+                                data.batch_stats.skipped + ' skipped)'
+                            );
+                            // Process next batch
+                            processBatch(data.processed);
+                        } else {
+                            // Show completion message
+                            $status.html(data.completion_summary.message);
+                            $button.prop('disabled', false);
+                            $spinner.removeClass('is-active');
+                            
+                            // Add success class to progress bar
+                            $progressBar.addClass('success');
+                            
+                            // Store completion state in localStorage
+                            localStorage.setItem('mdm_sync_complete', JSON.stringify({
+                                message: data.completion_summary.message,
+                                timestamp: new Date().getTime()
+                            }));
+                        }
                     } else {
-                        $status.html(
-                            'Syncing...<br>' +
-                            'Processed ' + response.data.processed + ' out of ' + response.data.total + ' records (' + progress + '%)'
-                        );
-                        setTimeout(function() {
-                            processBatch(response.data.processed);
-                        }, 500);
+                        handleError(response.data);
                     }
                 },
-                error: function(xhr, status, error) {
-                    var errorMessage = '';
-                    try {
-                        var response = JSON.parse(xhr.responseText);
-                        errorMessage = response.data || error || 'Server error occurred';
-                    } catch(e) {
-                        errorMessage = error || 'Server error occurred';
-                    }
-                    handleError(errorMessage);
+                error: function(jqXHR, textStatus, errorThrown) {
+                    handleError(errorThrown);
                 }
             });
         }
 
         function handleError(error) {
-            $status.html(
-                '<span style="color: red;">Error: ' + error + '</span><br>' +
-                'Please try again or contact support if the issue persists.'
-            );
-            $spinner.removeClass('is-active');
             $button.prop('disabled', false);
-            console.error('Sync error:', error);
+            $spinner.removeClass('is-active');
+            $status.html('<span class="error">' + (error || 'An error occurred during sync') + '</span>');
+            $progressBar.addClass('error');
+            
+            // Clear stored completion state
+            localStorage.removeItem('mdm_sync_complete');
         }
 
         // Start processing
         processBatch(0);
+    });
+
+    // Check for stored completion state on page load
+    $(document).ready(function() {
+        var storedSync = localStorage.getItem('mdm_sync_complete');
+        if (storedSync) {
+            try {
+                var syncData = JSON.parse(storedSync);
+                var $progress = $('#mdm-sync-progress');
+                var $progressBar = $progress.find('.mdm-progress-fill');
+                var $status = $progress.find('.mdm-progress-status');
+                
+                // Show stored completion state
+                $progress.removeClass('hidden').show();
+                $progressBar.css('width', '100%').addClass('success');
+                $status.html(syncData.message);
+            } catch (e) {
+                // Clear invalid stored data
+                localStorage.removeItem('mdm_sync_complete');
+            }
+        }
     });
 
     // Handle clear logs button
