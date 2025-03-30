@@ -56,6 +56,9 @@ class Admin {
         add_action('wp_ajax_mdm_sync_membership_fields', array($this, 'ajax_sync_membership_fields'));
         add_action('wp_ajax_mdm_clear_logs', array($this, 'ajax_clear_logs'));
 
+        // WooCommerce order refund hook
+        add_action('woocommerce_order_refunded', array($this, 'sync_order_user'), 10, 2);
+        
         // Log plugin initialization
         //$this->logger->info('Membership Discount Manager admin initialized');
     }
@@ -1614,6 +1617,11 @@ class Admin {
      */
     public function sync_order_user($order_id) {
         try {
+            $this->logger->info('Order sync triggered', array(
+                'order_id' => $order_id,
+                'hook' => current_filter()
+            ));
+
             $order = wc_get_order($order_id);
             if (!$order) {
                 throw new \Exception('Order not found');
@@ -1624,14 +1632,24 @@ class Admin {
                 throw new \Exception('Order has no associated user');
             }
 
-            // Always update spending data regardless of manual override
-            global $wpdb;
-
-            // Determine which total to use based on settings
+            // Get the current order's totals
             $include_tax = get_option('mdm_include_tax', false);
+            $current_order_total = $include_tax ? $order->get_total() : ($order->get_total() - $order->get_total_tax());
+            
+            $this->logger->info('Processing order for user', array(
+                'order_id' => $order_id,
+                'user_id' => $user_id,
+                'order_status' => $order->get_status(),
+                'order_total' => $current_order_total,
+                'include_tax' => $include_tax
+            ));
+
+            // Get historical spending data
+            global $wpdb;
             $total_field = $include_tax ? 'total_sales' : 'net_total';
 
-            $user_data = $wpdb->get_row($wpdb->prepare("
+            // Log the query we're about to execute
+            $query = $wpdb->prepare("
                 SELECT 
                     cl.user_id,
                     ROUND(SUM(CASE 
@@ -1642,44 +1660,100 @@ class Admin {
                     ROUND(SUM(os.{$total_field}), 2) as total_spend
                 FROM {$wpdb->prefix}wc_order_stats AS os
                 INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE os.status = 'wc-completed' AND cl.user_id = %d
+                WHERE os.status = 'wc-completed' 
+                AND cl.user_id = %d
+                AND os.order_id != %d  -- Exclude current order to avoid double counting
                 GROUP BY cl.user_id
-            ", $user_id));
+            ", $user_id, $order_id);
 
-            if ($user_data) {
-                // Always update spending data
-                update_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', $user_data->yearly_spend);
-                update_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', $user_data->total_spend);
-                update_user_meta($user_id, '_wc_memberships_profile_field_last_updated', current_time('mysql'));
+            $this->logger->debug('Executing SQL query', array(
+                'query' => $query,
+                'user_id' => $user_id,
+                'using_total_field' => $total_field
+            ));
+
+            $user_data = $wpdb->get_row($query);
+
+            // Log current values before update
+            $old_yearly_spend = get_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', true);
+            $old_total_spend = get_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', true);
+            $old_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
+
+            $this->logger->info('Current user data before update', array(
+                'user_id' => $user_id,
+                'old_yearly_spend' => $old_yearly_spend,
+                'old_total_spend' => $old_total_spend,
+                'old_tier' => $old_tier
+            ));
+
+            // Calculate new totals including current order
+            $historical_yearly = $user_data ? $user_data->yearly_spend : 0;
+            $historical_total = $user_data ? $user_data->total_spend : 0;
+
+            // Add current order to totals
+            $new_yearly_spend = $historical_yearly + $current_order_total;
+            $new_total_spend = $historical_total + $current_order_total;
+
+            $this->logger->info('Calculated new spending totals', array(
+                'user_id' => $user_id,
+                'historical_yearly' => $historical_yearly,
+                'historical_total' => $historical_total,
+                'current_order_total' => $current_order_total,
+                'new_yearly_spend' => $new_yearly_spend,
+                'new_total_spend' => $new_total_spend
+            ));
+
+            // Update spending data
+            update_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', $new_yearly_spend);
+            update_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', $new_total_spend);
+            update_user_meta($user_id, '_wc_memberships_profile_field_last_updated', current_time('mysql'));
+            
+            $this->logger->info('Updated user spending data', array(
+                'user_id' => $user_id,
+                'new_yearly_spend' => $new_yearly_spend,
+                'new_total_spend' => $new_total_spend,
+                'using_total_with_tax' => $include_tax
+            ));
+
+            // Verify the updates
+            $updated_yearly_spend = get_user_meta($user_id, '_wc_memberships_profile_field_average_spend_last_year', true);
+            $updated_total_spend = get_user_meta($user_id, '_wc_memberships_profile_field_total_spend_all_time', true);
+            $updated_timestamp = get_user_meta($user_id, '_wc_memberships_profile_field_last_updated', true);
+
+            $this->logger->info('Verified updated values', array(
+                'user_id' => $user_id,
+                'verified_yearly_spend' => $updated_yearly_spend,
+                'verified_total_spend' => $updated_total_spend,
+                'verified_last_updated' => $updated_timestamp
+            ));
+
+            // Only update tier if manual override is not set
+            $manual_override = get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true);
+            if ($manual_override !== 'yes') {
+                $tier_updated = $this->calculate_and_update_user_tier($user_id);
+                $new_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
                 
-                $this->logger->info('Updated user spending data', array(
+                $this->logger->info('Tier update attempt', array(
                     'user_id' => $user_id,
-                    'yearly_spend' => $user_data->yearly_spend,
-                    'total_spend' => $user_data->total_spend,
+                    'tier_updated' => $tier_updated,
+                    'old_tier' => $old_tier,
+                    'new_tier' => $new_tier,
                     'using_total_with_tax' => $include_tax
                 ));
-
-                // Only update tier if manual override is not set
-                $manual_override = get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true);
-                if ($manual_override !== 'yes') {
-                    $this->calculate_and_update_user_tier($user_id);
-                    $this->logger->info('Updated user tier (auto)', array(
-                        'user_id' => $user_id,
-                        'using_total_with_tax' => $include_tax
-                    ));
-                } else {
-                    $this->logger->info('Skipped tier update (manual override)', array(
-                        'user_id' => $user_id,
-                        'using_total_with_tax' => $include_tax
-                    ));
-                }
+            } else {
+                $this->logger->info('Skipped tier update due to manual override', array(
+                    'user_id' => $user_id,
+                    'current_tier' => $old_tier,
+                    'manual_override' => true
+                ));
             }
 
             return array(
                 'success' => true,
                 'user_id' => $user_id,
-                'yearly_spend' => $user_data->yearly_spend,
-                'total_spend' => $user_data->total_spend,
+                'yearly_spend' => $new_yearly_spend,
+                'total_spend' => $new_total_spend,
+                'current_order_total' => $current_order_total,
                 'manual_override' => ($manual_override === 'yes'),
                 'using_total_with_tax' => $include_tax
             );
@@ -1687,7 +1761,8 @@ class Admin {
         } catch (\Exception $e) {
             $this->logger->error('Order sync failed', array(
                 'order_id' => $order_id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ));
             return new \WP_Error('sync_error', $e->getMessage());
         }
