@@ -167,6 +167,13 @@ class Admin {
             'default' => 20,
         ));
 
+        // Tax calculation setting
+        register_setting('mdm_options', 'mdm_include_tax', array(
+            'type' => 'boolean',
+            'description' => 'Whether to include tax in spending calculations',
+            'default' => false,
+        ));
+
         // Logging settings
         register_setting('mdm_options', 'mdm_logging_enabled', array(
             'type' => 'boolean',
@@ -533,6 +540,42 @@ class Admin {
                                 <?php $this->render_sync_settings(); ?>
                             </div>
                         </div>
+
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Other Settings', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <tr>
+                                        <th scope="row"><?php _e('Spending Calculation', 'membership-discount-manager'); ?></th>
+                                        <td>
+                                            <label>
+                                                <input type="radio" 
+                                                       name="mdm_include_tax" 
+                                                       value="0" 
+                                                       <?php checked(get_option('mdm_include_tax', false), false); ?> />
+                                                <?php _e('Use net total (excluding tax)', 'membership-discount-manager'); ?>
+                                            </label>
+                                            <br>
+                                            <label>
+                                                <input type="radio" 
+                                                       name="mdm_include_tax" 
+                                                       value="1" 
+                                                       <?php checked(get_option('mdm_include_tax', false), true); ?> />
+                                                <?php _e('Use total sales (including tax)', 'membership-discount-manager'); ?>
+                                            </label>
+                                            <p class="description">
+                                                <?php _e('Choose how to calculate user spending totals:', 'membership-discount-manager'); ?>
+                                                <ul style="list-style-type: disc; margin-left: 20px;">
+                                                    <li><?php _e('Net total: Uses order totals excluding tax (recommended for B2B)', 'membership-discount-manager'); ?></li>
+                                                    <li><?php _e('Total sales: Uses order totals including tax', 'membership-discount-manager'); ?></li>
+                                                </ul>
+                                                <?php _e('This setting affects both yearly and all-time spending calculations used for tier assignments.', 'membership-discount-manager'); ?>
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
                     </div>
                     <?php
                 } else if ($current_tab === 'automation') {
@@ -870,8 +913,11 @@ class Admin {
             if (isset($_POST['mdm_tier_settings'])) {
                 update_option('mdm_tier_settings', $this->sanitize_tier_settings($_POST['mdm_tier_settings']));
             }
-        if (isset($_POST['mdm_sync_batch_size'])) {
+            if (isset($_POST['mdm_sync_batch_size'])) {
                 update_option('mdm_sync_batch_size', $this->sanitize_batch_size($_POST['mdm_sync_batch_size']));
+            }
+            if (isset($_POST['mdm_include_tax'])) {
+                update_option('mdm_include_tax', (bool) $_POST['mdm_include_tax']);
             }
         }
         // Automation tab settings
@@ -883,8 +929,8 @@ class Admin {
         }
         // Debug tab settings
         else if ($current_tab === 'debug') {
-        update_option('mdm_logging_enabled', isset($_POST['mdm_logging_enabled']));
-        update_option('mdm_debug_mode', isset($_POST['mdm_debug_mode']));
+            update_option('mdm_logging_enabled', isset($_POST['mdm_logging_enabled']));
+            update_option('mdm_debug_mode', isset($_POST['mdm_debug_mode']));
         }
 
         // Add settings updated message
@@ -971,6 +1017,10 @@ class Admin {
             'batch_size' => $batch_size
         ));
 
+        // Determine which total to use based on settings
+        $include_tax = get_option('mdm_include_tax', false);
+        $total_field = $include_tax ? 'total_sales' : 'net_total';
+
         // Get total number of users with orders
         $total_query = "
             SELECT COUNT(DISTINCT cl.user_id) as total
@@ -981,7 +1031,8 @@ class Admin {
         $total = $wpdb->get_var($total_query);
 
         $this->logger->info("[$source] Found total users", array(
-            'total_users' => $total
+            'total_users' => $total,
+            'using_total_with_tax' => $include_tax
         ));
 
         // Get batch of users with their spending data
@@ -990,10 +1041,10 @@ class Admin {
                 cl.user_id,
                 ROUND(SUM(CASE 
                     WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
-                    THEN os.total_sales 
+                    THEN os.{$total_field}
                     ELSE 0 
                 END), 2) as yearly_spend,
-                ROUND(SUM(os.total_sales), 2) as total_spend
+                ROUND(SUM(os.{$total_field}), 2) as total_spend
             FROM {$wpdb->prefix}wc_order_stats AS os
             INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
             WHERE os.status = 'wc-completed'
@@ -1015,7 +1066,8 @@ class Admin {
             $this->logger->debug("[$source] Processing user", array(
                 'user_id' => $user->user_id,
                 'yearly_spend' => $user->yearly_spend,
-                'total_spend' => $user->total_spend
+                'total_spend' => $user->total_spend,
+                'using_total_with_tax' => $include_tax
             ));
 
             // Always update spending data and timestamp, regardless of manual override
@@ -1026,7 +1078,8 @@ class Admin {
             $this->logger->info("[$source] Updated user spending data", array(
                 'user_id' => $user->user_id,
                 'yearly_spend' => $user->yearly_spend,
-                'total_spend' => $user->total_spend
+                'total_spend' => $user->total_spend,
+                'using_total_with_tax' => $include_tax
             ));
 
             // Check for manual override before updating tier
@@ -1573,15 +1626,20 @@ class Admin {
 
             // Always update spending data regardless of manual override
             global $wpdb;
+
+            // Determine which total to use based on settings
+            $include_tax = get_option('mdm_include_tax', false);
+            $total_field = $include_tax ? 'total_sales' : 'net_total';
+
             $user_data = $wpdb->get_row($wpdb->prepare("
                 SELECT 
                     cl.user_id,
                     ROUND(SUM(CASE 
                         WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
-                        THEN os.total_sales 
+                        THEN os.{$total_field}
                         ELSE 0 
                     END), 2) as yearly_spend,
-                    ROUND(SUM(os.total_sales), 2) as total_spend
+                    ROUND(SUM(os.{$total_field}), 2) as total_spend
                 FROM {$wpdb->prefix}wc_order_stats AS os
                 INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
                 WHERE os.status = 'wc-completed' AND cl.user_id = %d
@@ -1597,16 +1655,23 @@ class Admin {
                 $this->logger->info('Updated user spending data', array(
                     'user_id' => $user_id,
                     'yearly_spend' => $user_data->yearly_spend,
-                    'total_spend' => $user_data->total_spend
+                    'total_spend' => $user_data->total_spend,
+                    'using_total_with_tax' => $include_tax
                 ));
 
                 // Only update tier if manual override is not set
                 $manual_override = get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true);
                 if ($manual_override !== 'yes') {
                     $this->calculate_and_update_user_tier($user_id);
-                    $this->logger->info('Updated user tier (auto)', array('user_id' => $user_id));
+                    $this->logger->info('Updated user tier (auto)', array(
+                        'user_id' => $user_id,
+                        'using_total_with_tax' => $include_tax
+                    ));
                 } else {
-                    $this->logger->info('Skipped tier update (manual override)', array('user_id' => $user_id));
+                    $this->logger->info('Skipped tier update (manual override)', array(
+                        'user_id' => $user_id,
+                        'using_total_with_tax' => $include_tax
+                    ));
                 }
             }
 
@@ -1615,7 +1680,8 @@ class Admin {
                 'user_id' => $user_id,
                 'yearly_spend' => $user_data->yearly_spend,
                 'total_spend' => $user_data->total_spend,
-                'manual_override' => ($manual_override === 'yes')
+                'manual_override' => ($manual_override === 'yes'),
+                'using_total_with_tax' => $include_tax
             );
 
         } catch (\Exception $e) {
