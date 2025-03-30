@@ -949,15 +949,20 @@ class Admin {
     }
 
     /**
-     * Process a batch of user syncs
-     * 
-     * @param string $source Source of the sync (MANUAL or CRON)
-     * @param int $offset Starting offset for the batch
-     * @param int $batch_size Size of the batch to process
-     * @return array Processing results
+     * Process a batch of users for sync
+     *
+     * @param string $source Source of the sync request (MANUAL or CRON)
+     * @param int $offset Starting offset for user query
+     * @param int $batch_size Number of users to process in this batch
+     * @return array Stats about the sync process
      */
-    private function process_sync_batch($source = 'MANUAL', $offset = 0, $batch_size = 20) {
+    public function process_sync_batch($source = 'MANUAL', $offset = 0, $batch_size = 20) {
         global $wpdb;
+
+        // Ensure logger is initialized
+        if (!$this->logger) {
+            $this->logger = new Logger();
+        }
 
         $batch_size = min(max($batch_size, 1), 100); // Ensure batch size is between 1 and 100
 

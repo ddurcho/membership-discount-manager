@@ -125,6 +125,16 @@ class Logger {
     }
 
     /**
+     * Log warning message
+     *
+     * @param string $message
+     * @param array $context
+     */
+    public function warning($message, $context = array()) {
+        $this->log($message, 'warning', $context);
+    }
+
+    /**
      * Get path to latest log file
      *
      * @return string|false

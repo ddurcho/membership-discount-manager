@@ -154,19 +154,6 @@ class Cron {
      */
     public function run_auto_calculation() {
         try {
-            // Set initial state immediately
-            update_option('mdm_auto_calc_last_run_stats', array(
-                'is_running' => true,
-                'progress' => 0,
-                'last_run' => current_time('mysql'),
-                'records_processed' => 0,
-                'records_updated' => 0,
-                'records_skipped' => 0,
-                'records_errored' => 0,
-                'start_time' => current_time('mysql'),
-                'pid' => getmypid()
-            ));
-
             // Check if already running and not timed out
             $current_stats = get_option('mdm_auto_calc_last_run_stats', array());
             $last_run_time = isset($current_stats['last_run']) ? strtotime($current_stats['last_run']) : 0;
@@ -198,7 +185,34 @@ class Cron {
             $admin = new \MembershipDiscountManager\Admin();
             $batch_size = get_option('mdm_sync_batch_size', 20);
             
-            $stats = $admin->process_user_sync('CRON', $batch_size);
+            // Initialize totals
+            $total_processed = 0;
+            $total_updated = 0;
+            $total_skipped = 0;
+            $total_errors = 0;
+            $offset = 0;
+            $is_complete = false;
+
+            // Process all batches
+            while (!$is_complete) {
+                $stats = $admin->process_sync_batch('CRON', $offset, $batch_size);
+                
+                // Update totals
+                $total_processed += $stats['processed'];
+                $total_updated += $stats['updated'];
+                $total_skipped += $stats['skipped'];
+                
+                // Check if we're done
+                $is_complete = ($offset + $stats['processed'] >= $stats['total']);
+                
+                // Update offset for next batch
+                $offset += $batch_size;
+
+                // Add a small delay between batches to prevent server overload
+                if (!$is_complete) {
+                    usleep(100000); // 0.1 second delay
+                }
+            }
             
             $execution_time = round(microtime(true) - $start_time, 2);
 
@@ -207,20 +221,18 @@ class Cron {
                 'is_running' => false,
                 'progress' => 100,
                 'last_run' => current_time('mysql'),
-                'records_processed' => $stats['total_processed'],
-                'records_updated' => $stats['total_updated'],
-                'records_skipped' => $stats['total_skipped'],
-                'records_errored' => $stats['total_errors'],
-                'execution_time' => $execution_time,
-                'completed' => true,
-                'end_time' => current_time('mysql')
+                'records_processed' => $total_processed,
+                'records_updated' => $total_updated,
+                'records_skipped' => $total_skipped,
+                'records_errored' => $total_errors,
+                'execution_time' => $execution_time
             ));
 
             $this->logger->info('[CRON] Completed automatic tier calculation', array(
-                'total_processed' => $stats['total_processed'],
-                'total_updated' => $stats['total_updated'],
-                'total_skipped' => $stats['total_skipped'],
-                'total_errors' => $stats['total_errors'],
+                'total_processed' => $total_processed,
+                'total_updated' => $total_updated,
+                'total_skipped' => $total_skipped,
+                'total_errors' => $total_errors,
                 'execution_time' => $execution_time,
                 'next_scheduled' => wp_next_scheduled('mdm_auto_calculation')
             ));
@@ -231,18 +243,12 @@ class Cron {
                 'trace' => $e->getTraceAsString()
             ));
             
-            // Update last run status with error
+            // Update stats to show error state
             update_option('mdm_auto_calc_last_run_stats', array(
                 'is_running' => false,
-                'error' => true,
-                'error_message' => $e->getMessage(),
+                'progress' => 0,
                 'last_run' => current_time('mysql'),
-                'records_processed' => isset($stats['total_processed']) ? $stats['total_processed'] : 0,
-                'records_updated' => isset($stats['total_updated']) ? $stats['total_updated'] : 0,
-                'records_skipped' => isset($stats['total_skipped']) ? $stats['total_skipped'] : 0,
-                'records_errored' => (isset($stats['total_errors']) ? $stats['total_errors'] : 0) + 1,
-                'completed' => false,
-                'end_time' => current_time('mysql')
+                'error' => $e->getMessage()
             ));
         }
     }
