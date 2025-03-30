@@ -26,7 +26,7 @@ class Setup {
         \add_action('woocommerce_init', array($this, 'init'), 20);
         \add_action('wp_loaded', array($this, 'late_init'), 20);
         
-        $this->logger->info('MDM Setup constructor called');
+        //$this->logger->info('MDM Setup constructor called');
     }
 
     /**
@@ -41,7 +41,7 @@ class Setup {
 
         // Check if WooCommerce Memberships is active
         if (!\class_exists('WC_Memberships')) {
-            $this->logger->error('WooCommerce Memberships not active');
+            //$this->logger->error('WooCommerce Memberships not active');
             return;
         }
 
@@ -60,7 +60,7 @@ class Setup {
             $this->init_discount_handler();
         }
 
-        $this->logger->info('MDM Setup init completed');
+        //$this->logger->info('MDM Setup init completed');
     }
 
     /**
@@ -88,7 +88,7 @@ class Setup {
      */
     private function init_discount_handler() {
         if (!$this->discount_handler && \function_exists('WC')) {
-            $this->logger->info('Initializing Discount Handler');
+            //$this->logger->info('Initializing Discount Handler');
             $this->discount_handler = new Discount_Handler();
             
             // Let the Discount_Handler initialize its own hooks

@@ -13,11 +13,25 @@ class Admin {
     private $logger;
 
     /**
+     * Static flag to track initialization
+     *
+     * @var bool
+     */
+    private static $initialized = false;
+
+    /**
      * Constructor
      */
     public function __construct() {
+        // Only initialize once
+        if (self::$initialized) {
+            return;
+        }
+
         $this->logger = new Logger();
         $this->init_hooks();
+        
+        self::$initialized = true;
     }
 
     /**
@@ -43,7 +57,7 @@ class Admin {
         add_action('wp_ajax_mdm_clear_logs', array($this, 'ajax_clear_logs'));
 
         // Log plugin initialization
-        $this->logger->info('Membership Discount Manager admin initialized');
+        //$this->logger->info('Membership Discount Manager admin initialized');
     }
 
     /**
@@ -528,6 +542,10 @@ class Admin {
                         <div class="mdm-settings-box">
                             <h2><?php _e('Automatic Calculation Settings', 'membership-discount-manager'); ?></h2>
                             <div class="inside">
+                                <?php
+                                // Check WordPress Cron Status
+                                $wp_cron_disabled = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+                                ?>
                                 <table class="form-table">
                                     <tr>
                                         <th scope="row"><?php _e('Enable Automatic Calculation', 'membership-discount-manager'); ?></th>
@@ -548,6 +566,7 @@ class Admin {
                                                 <?php
                                                 $current_frequency = get_option('mdm_auto_calc_frequency', 'daily');
                                                 $frequencies = array(
+                                                    'two_minutes' => __('Every 2 minutes', 'membership-discount-manager'),
                                                     'five_minutes' => __('Every 5 minutes', 'membership-discount-manager'),
                                                     'hourly' => __('Hourly', 'membership-discount-manager'),
                                                     'daily' => __('Daily', 'membership-discount-manager')

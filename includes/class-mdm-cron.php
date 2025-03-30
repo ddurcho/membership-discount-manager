@@ -48,6 +48,11 @@ class Cron {
      * @return array Modified cron schedules
      */
     public function add_cron_interval($schedules) {
+        $schedules['two_minutes'] = array(
+            'interval' => 120, // 2 minutes in seconds
+            'display' => __('Every 2 minutes', 'membership-discount-manager')
+        );
+        
         $schedules['five_minutes'] = array(
             'interval' => 300, // 5 minutes in seconds
             'display' => __('Every 5 minutes', 'membership-discount-manager')
@@ -141,6 +146,44 @@ class Cron {
      */
     public function run_auto_calculation() {
         try {
+            // Set initial state immediately
+            update_option('mdm_auto_calc_last_run_stats', array(
+                'is_running' => true,
+                'progress' => 0,
+                'last_run' => current_time('mysql'),
+                'records_processed' => 0,
+                'records_updated' => 0,
+                'records_skipped' => 0,
+                'records_errored' => 0,
+                'start_time' => current_time('mysql'),
+                'pid' => getmypid()
+            ));
+
+            // Check if already running and not timed out
+            $current_stats = get_option('mdm_auto_calc_last_run_stats', array());
+            $last_run_time = isset($current_stats['last_run']) ? strtotime($current_stats['last_run']) : 0;
+            
+            // If it's been running for more than 15 minutes, consider it timed out
+            if (isset($current_stats['is_running']) && $current_stats['is_running'] && 
+                (time() - $last_run_time) < 900) { // 15 minutes in seconds
+                
+                // Double check if the process is still running
+                if (isset($current_stats['pid']) && $current_stats['pid'] && function_exists('posix_kill')) {
+                    if (posix_kill($current_stats['pid'], 0)) {
+                        $this->logger->warning('[CRON] Another instance is still running, skipping this run');
+                        return;
+                    }
+                } else {
+                    $this->logger->warning('[CRON] Another instance is already running, skipping this run');
+                    return;
+                }
+            }
+
+            // Reset the running state in case of previous timeout
+            if (isset($current_stats['is_running']) && $current_stats['is_running']) {
+                $this->logger->warning('[CRON] Previous run appears to have timed out, resetting state');
+            }
+
             $this->logger->info('[CRON] Starting automatic tier calculation');
             
             global $wpdb;
@@ -152,14 +195,16 @@ class Cron {
             $total_processed = 0;
             $total_updated = 0;
             $total_skipped = 0;
+            $total_errors = 0;
             $start_time = microtime(true);
 
-            // First, get total count of users with completed orders
+            // First, get total count of users
             $count_query = "
-                SELECT COUNT(DISTINCT cl.user_id) as total
-                FROM {$wpdb->prefix}wc_order_stats AS os
-                INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                WHERE os.status = 'wc-completed'
+                SELECT COUNT(DISTINCT u.ID) as total
+                FROM {$wpdb->users} u
+                LEFT JOIN {$wpdb->prefix}wc_customer_lookup cl ON u.ID = cl.user_id
+                LEFT JOIN {$wpdb->prefix}wc_order_stats os ON cl.customer_id = os.customer_id AND os.status = 'wc-completed'
+                WHERE u.ID > 0
             ";
             $total_users = $wpdb->get_var($count_query);
 
@@ -167,28 +212,36 @@ class Cron {
                 throw new \Exception('No users found to process');
             }
 
+            // Log the start of processing
             $this->logger->info('[CRON] Starting batch processing', array(
                 'total_users' => $total_users,
                 'batch_size' => $batch_size,
-                'start_time' => wp_date('Y-m-d H:i:s')
+                'pid' => getmypid()
             ));
 
             // Process users in batches
             while ($offset < $total_users) {
+                $batch_start_time = microtime(true);
+
                 // Get users for this batch
                 $users_query = $wpdb->prepare("
-                    SELECT DISTINCT
-                        cl.user_id,
-                        ROUND(SUM(CASE 
-                            WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
-                            THEN os.total_sales 
-                            ELSE 0 
-                        END), 2) as yearly_spend,
-                        ROUND(SUM(os.total_sales), 2) as total_spend
-                    FROM {$wpdb->prefix}wc_order_stats AS os
-                    INNER JOIN {$wpdb->prefix}wc_customer_lookup AS cl ON os.customer_id = cl.customer_id
-                    WHERE os.status = 'wc-completed'
-                    GROUP BY cl.user_id
+                    SELECT 
+                        u.ID as user_id,
+                        u.user_email,
+                        COALESCE(ROUND(
+                            SUM(CASE 
+                                WHEN os.date_created >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+                                THEN os.total_sales 
+                                ELSE 0 
+                            END), 2
+                        ), 0) as yearly_spend,
+                        COALESCE(ROUND(SUM(os.total_sales), 2), 0) as total_spend
+                    FROM {$wpdb->users} u
+                    LEFT JOIN {$wpdb->prefix}wc_customer_lookup cl ON u.ID = cl.user_id
+                    LEFT JOIN {$wpdb->prefix}wc_order_stats os ON cl.customer_id = os.customer_id AND os.status = 'wc-completed'
+                    WHERE u.ID > 0
+                    GROUP BY u.ID, u.user_email
+                    ORDER BY u.ID ASC
                     LIMIT %d OFFSET %d
                 ", $batch_size, $offset);
 
@@ -205,112 +258,105 @@ class Cron {
                 $batch_processed = 0;
                 $batch_updated = 0;
                 $batch_skipped = 0;
+                $batch_errors = 0;
 
                 foreach ($users as $user) {
-                    // Get user details for logging
-                    $user_data = get_user_by('id', $user->user_id);
-                    $user_email = $user_data ? $user_data->user_email : 'Unknown';
-                    
-                    $this->logger->debug('[CRON] Processing user', array(
-                        'user_id' => $user->user_id,
-                        'user_email' => $user_email,
-                        'yearly_spend' => $user->yearly_spend,
-                        'total_spend' => $user->total_spend
-                    ));
+                    try {
+                        // Update spending data
+                        update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
+                        update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
 
-                    // Update spending data
-                    update_user_meta($user->user_id, '_wc_memberships_profile_field_average_spend_last_year', $user->yearly_spend);
-                    update_user_meta($user->user_id, '_wc_memberships_profile_field_total_spend_all_time', $user->total_spend);
+                        // Skip if manual override is enabled
+                        $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
+                        if ($manual_override === 'yes') {
+                            $batch_skipped++;
+                            $batch_processed++;
+                            continue;
+                        }
 
-                    // Skip if manual override is enabled
-                    $manual_override = get_user_meta($user->user_id, '_wc_memberships_profile_field_manual_discount_override', true);
-                    if ($manual_override === 'yes') {
-                        $this->logger->debug('[CRON] Skipping user (manual override)', array(
+                        // Calculate and update tier
+                        if ($admin->calculate_and_update_user_tier($user->user_id)) {
+                            $batch_updated++;
+                        }
+                        
+                        $batch_processed++;
+                        
+                        // Update progress for each user
+                        if ($batch_processed % 5 == 0) { // Update every 5 users
+                            $total_processed_temp = $total_processed + $batch_processed;
+                            $progress = round(($total_processed_temp / $total_users) * 100, 2);
+                            update_option('mdm_auto_calc_last_run_stats', array(
+                                'is_running' => true,
+                                'progress' => $progress,
+                                'last_run' => current_time('mysql'),
+                                'records_processed' => $total_processed_temp,
+                                'records_updated' => $total_updated + $batch_updated,
+                                'records_skipped' => $total_skipped + $batch_skipped,
+                                'records_errored' => $total_errors + $batch_errors,
+                                'total_users' => $total_users,
+                                'pid' => getmypid()
+                            ));
+                        }
+                    } catch (\Exception $e) {
+                        $this->logger->error('[CRON] Error processing user', array(
                             'user_id' => $user->user_id,
-                            'user_email' => $user_email
+                            'error' => $e->getMessage()
                         ));
-                        $batch_skipped++;
+                        $batch_errors++;
                         continue;
                     }
-
-                    // Get current tier before update
-                    $current_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
-
-                    // Use Admin class to calculate and update tier
-                    if ($admin->calculate_and_update_user_tier($user->user_id)) {
-                        $new_tier = get_user_meta($user->user_id, '_wc_memberships_profile_field_discount_tier', true);
-                        $this->logger->info('[CRON] Updated user tier', array(
-                            'user_id' => $user->user_id,
-                            'user_email' => $user_email,
-                            'old_tier' => $current_tier,
-                            'new_tier' => $new_tier,
-                            'yearly_spend' => $user->yearly_spend,
-                            'total_spend' => $user->total_spend
-                        ));
-                        $batch_updated++;
-                    }
-
-                    $batch_processed++;
                 }
 
                 // Update totals
                 $total_processed += $batch_processed;
                 $total_updated += $batch_updated;
                 $total_skipped += $batch_skipped;
+                $total_errors += $batch_errors;
 
-                $this->logger->info('[CRON] Batch completed', array(
-                    'batch_number' => ($offset / $batch_size) + 1,
-                    'processed' => $batch_processed,
-                    'updated' => $batch_updated,
-                    'skipped' => $batch_skipped,
-                    'total_processed_so_far' => $total_processed,
-                    'total_updated_so_far' => $total_updated,
-                    'total_skipped_so_far' => $total_skipped,
-                    'remaining_users' => $total_users - ($offset + $batch_processed)
-                ));
-
-                // Update last run statistics after each batch
-                $end_time = microtime(true);
-                $execution_time = round($end_time - $start_time, 2);
-                
+                // Update progress after each batch
+                $progress = round(($total_processed / $total_users) * 100, 2);
                 update_option('mdm_auto_calc_last_run_stats', array(
+                    'is_running' => true,
+                    'progress' => $progress,
+                    'last_run' => current_time('mysql'),
                     'records_processed' => $total_processed,
                     'records_updated' => $total_updated,
                     'records_skipped' => $total_skipped,
-                    'execution_time' => $execution_time,
-                    'last_run' => current_time('mysql'),
-                    'is_running' => true,
-                    'progress' => round(($total_processed / $total_users) * 100, 2)
+                    'records_errored' => $total_errors,
+                    'total_users' => $total_users,
+                    'pid' => getmypid()
                 ));
 
-                // Move to next batch
                 $offset += $batch_size;
+                
+                // Add a small delay between batches
+                usleep(100000); // 100ms delay
             }
 
-            $end_time = microtime(true);
-            $execution_time = round($end_time - $start_time, 2);
+            $execution_time = round(microtime(true) - $start_time, 2);
 
             // Final update of last run statistics
-            $stats = array(
+            update_option('mdm_auto_calc_last_run_stats', array(
+                'is_running' => false,
+                'progress' => 100,
+                'last_run' => current_time('mysql'),
                 'records_processed' => $total_processed,
                 'records_updated' => $total_updated,
                 'records_skipped' => $total_skipped,
+                'records_errored' => $total_errors,
                 'execution_time' => $execution_time,
-                'last_run' => current_time('mysql'),
-                'is_running' => false,
-                'progress' => 100
-            );
-
-            update_option('mdm_auto_calc_last_run_stats', $stats);
-            update_option('mdm_auto_calc_last_run', time());
+                'total_users' => $total_users,
+                'completed' => true,
+                'end_time' => current_time('mysql')
+            ));
 
             $this->logger->info('[CRON] Completed automatic tier calculation', array(
                 'total_processed' => $total_processed,
                 'total_updated' => $total_updated,
                 'total_skipped' => $total_skipped,
-                'execution_time_seconds' => $execution_time,
-                'next_scheduled' => wp_next_scheduled('mdm_auto_calculation') ? 
-                    wp_date('Y-m-d H:i:s', wp_next_scheduled('mdm_auto_calculation')) : 'Not scheduled'
+                'total_errors' => $total_errors,
+                'execution_time' => $execution_time,
+                'next_scheduled' => wp_next_scheduled('mdm_auto_calculation')
             ));
 
         } catch (\Exception $e) {
@@ -320,12 +366,18 @@ class Cron {
             ));
             
             // Update last run status with error
-            update_option('mdm_auto_calc_last_run', time());
             update_option('mdm_auto_calc_last_run_stats', array(
+                'is_running' => false,
                 'error' => true,
                 'error_message' => $e->getMessage(),
                 'last_run' => current_time('mysql'),
-                'is_running' => false
+                'records_processed' => $total_processed ?? 0,
+                'records_updated' => $total_updated ?? 0,
+                'records_skipped' => $total_skipped ?? 0,
+                'records_errored' => ($total_errors ?? 0) + 1,
+                'total_users' => $total_users ?? 0,
+                'completed' => false,
+                'end_time' => current_time('mysql')
             ));
         }
     }

@@ -13,25 +13,36 @@ class Discount_Handler {
     private $logger;
 
     /**
+     * Static flag to track initialization
+     * @var bool
+     */
+    private static $initialized = false;
+
+    /**
      * Constructor
      */
     public function __construct() {
+        // Prevent duplicate initialization
+        if (self::$initialized) {
+            return;
+        }
+
         $this->logger = new Logger();
         
         // Early debug logging
         error_log('🚀 MDM: Discount Handler Constructor Called');
-        $this->logger->info('🚀 MDM: Discount Handler Constructor Called');
+        //$this->logger->info('🚀 MDM: Discount Handler Constructor Called');
         
         // Log WordPress loading phase
-        $this->logger->info('🔄 WordPress Loading Phase', [
-            'did_action_init' => did_action('init'),
-            'did_action_wp_loaded' => did_action('wp_loaded'),
-            'did_action_woocommerce_init' => did_action('woocommerce_init'),
-            'wc_loaded' => defined('WC_LOADED'),
-            'is_admin' => is_admin(),
-            'doing_ajax' => wp_doing_ajax(),
-            'current_filter' => current_filter()
-        ]);
+        // $this->logger->info('🔄 WordPress Loading Phase', [
+        //     'did_action_init' => did_action('init'),
+        //     'did_action_wp_loaded' => did_action('wp_loaded'),
+        //     'did_action_woocommerce_init' => did_action('woocommerce_init'),
+        //     'wc_loaded' => defined('WC_LOADED'),
+        //     'is_admin' => is_admin(),
+        //     'doing_ajax' => wp_doing_ajax(),
+        //     'current_filter' => current_filter()
+        // ]);
 
         // Register our hooks after WooCommerce is loaded
         if (did_action('woocommerce_init')) {
@@ -44,6 +55,9 @@ class Discount_Handler {
 
         // Add early checkout hook
         add_action('wp', array($this, 'early_checkout_debug'));
+
+        self::$initialized = true;
+        //$this->logger->debug('Discount Handler initialized');
     }
 
     /**
@@ -75,14 +89,14 @@ class Discount_Handler {
             'manual_override' => get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true)
         );
 
-        $this->logger->debug('Debugging discount setup', [
-            'user_id' => $user_id,
-            'is_user_logged_in' => is_user_logged_in(),
-            'wc_session_exists' => isset(WC()->session),
-            'wc_cart_exists' => isset(WC()->cart),
-            'relevant_meta' => $relevant_meta,
-            'tier_settings' => get_option('mdm_tier_settings')
-        ]);
+        // $this->logger->debug('Debugging discount setup', [
+        //     'user_id' => $user_id,
+        //     'is_user_logged_in' => is_user_logged_in(),
+        //     'wc_session_exists' => isset(WC()->session),
+        //     'wc_cart_exists' => isset(WC()->cart),
+        //     'relevant_meta' => $relevant_meta,
+        //     'tier_settings' => get_option('mdm_tier_settings')
+        // ]);
     }
 
     /**
@@ -128,23 +142,23 @@ class Discount_Handler {
                 }
             }
             
-            $this->logger->info('🏷️ User Membership Status', [
-                'user_id' => $user_id,
-                'has_memberships' => !empty($memberships),
-                'membership_details' => $membership_info
-            ]);
+            // $this->logger->info('🏷️ User Membership Status', [
+            //     'user_id' => $user_id,
+            //     'has_memberships' => !empty($memberships),
+            //     'membership_details' => $membership_info
+            // ]);
         }
 
         // Debug discount calculation
         $discount_info = $this->get_user_discount($user_id);
-        $this->logger->info('💰 Current Discount Calculation', [
-            'discount_info' => $discount_info ? [
-                'tier' => $discount_info['tier'],
-                'percentage' => $discount_info['percentage']
-            ] : null,
-            'cart_subtotal' => WC()->cart ? WC()->cart->get_subtotal() : 'No cart',
-            'calculated_discount' => $discount_info ? ($discount_info['percentage'] . '%') : 'No discount'
-        ]);
+        // $this->logger->info('💰 Current Discount Calculation', [
+        //     'discount_info' => $discount_info ? [
+        //         'tier' => $discount_info['tier'],
+        //         'percentage' => $discount_info['percentage']
+        //     ] : null,
+        //     'cart_subtotal' => WC()->cart ? WC()->cart->get_subtotal() : 'No cart',
+        //     'calculated_discount' => $discount_info ? ($discount_info['percentage'] . '%') : 'No discount'
+        // ]);
     }
 
     /**
@@ -152,7 +166,7 @@ class Discount_Handler {
      */
     public function init_hooks() {
         error_log('⚡ MDM: Init Hooks Called');
-        $this->logger->info('⚡ MDM: Initializing Hooks');
+        //$this->logger->info('⚡ MDM: Initializing Hooks');
 
         // Cart calculation hooks
         add_action('woocommerce_cart_calculate_fees', array($this, 'add_discount_fee'), 99);
@@ -171,7 +185,7 @@ class Discount_Handler {
             add_action('cartflows_checkout_before_calculate_totals', array($this, 'add_discount_fee'), 99);
         }
 
-        $this->logger->info('⚡ MDM: Hooks Initialized');
+        //$this->logger->info('⚡ MDM: Hooks Initialized');
     }
 
     /**
