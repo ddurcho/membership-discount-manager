@@ -36,7 +36,7 @@ class Product {
     public function add_loyalty_discount_field() {
         woocommerce_wp_checkbox(array(
             'id' => '_mdm_loyalty_discount_enabled',
-            'label' => __('Enable VIP Discount', 'membership-discount-manager'),
+            'label' => __('Enable Loyalty Discount', 'membership-discount-manager'),
             'description' => __('Allow membership tier discounts for this product', 'membership-discount-manager'),
             'desc_tip' => true,
             'default' => 'no'

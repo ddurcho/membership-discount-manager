@@ -153,66 +153,42 @@ class Shortcodes {
      * @return string
      */
     public function render_next_tier_progress($atts = [], $content = null) {
-        // Get current user ID
         $user_id = get_current_user_id();
         if (!$user_id) {
-            return '';
-        }
-
-        $this->logger->debug('Rendering next tier progress shortcode', array(
-            'user_id' => $user_id
-        ));
-
-        // Check for manual override
-        $manual_override = get_user_meta($user_id, '_wc_memberships_profile_field_manual_discount_override', true);
-        if ($manual_override === 'yes') {
-            return ''; // Don't show progress if manually overridden
-        }
-
-        // Get user's spending data
-        $spending = $this->get_user_spending($user_id);
-        if (!$spending) {
-            return '';
-        }
-
-        // Get next tier information based on yearly spend
-        $next_tier = $this->get_next_tier_info($spending['yearly_spend']);
-        if (!$next_tier) {
             return sprintf(
-                '<span class="mdm-message mdm-message-success">%s</span>',
-                __('Congratulations! You\'ve reached our highest VIP tier! 🎉', 'membership-discount-manager')
+                '<p class="mdm-message mdm-login-required">%s</p>',
+                __('Please log in to see your Loyalty Tier progress.', 'membership-discount-manager')
             );
         }
 
-        // Format amount using WooCommerce currency
-        $amount_formatted = wc_price($next_tier['amount_needed']);
+        try {
+            $next_tier_info = $this->get_next_tier_info($user_id);
+            
+            if (!$next_tier_info) {
+                return sprintf(
+                    '<p class="mdm-message mdm-max-tier">%s</p>',
+                    __('Congratulations! You have reached our highest Loyalty Tier level.', 'membership-discount-manager')
+                );
+            }
 
-        // Generate motivational message
-        $messages = array(
-            sprintf(
-                __('Spend <span class="mdm-amount">%s</span> more this year to unlock <span class="mdm-tier">%s</span> status and enjoy <span class="mdm-discount">%d%%</span> discount! 🎯', 'membership-discount-manager'),
-                $amount_formatted,
-                $next_tier['tier'],
-                $next_tier['discount']
-            ),
-            sprintf(
-                __('You\'re just <span class="mdm-amount">%s</span> away from <span class="mdm-tier">%s</span> tier and a sweet <span class="mdm-discount">%d%%</span> discount this year! 🚀', 'membership-discount-manager'),
-                $amount_formatted,
-                $next_tier['tier'],
-                $next_tier['discount']
-            ),
-            sprintf(
-                __('Almost there! <span class="mdm-amount">%s</span> more this year unlocks <span class="mdm-tier">%s</span> benefits with <span class="mdm-discount">%d%%</span> savings! ⭐', 'membership-discount-manager'),
-                $amount_formatted,
-                $next_tier['tier'],
-                $next_tier['discount']
-            )
-        );
+            $current_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
+            $current_tier = $current_tier ? $current_tier : 'None';
+            
+            $message = sprintf(
+                __('You are currently in the %s Loyalty Tier. Spend %s more to reach the %s tier and get a %s%% discount!', 'membership-discount-manager'),
+                '<span class="mdm-current-tier">' . esc_html($current_tier) . '</span>',
+                '<span class="mdm-amount-needed">' . wc_price($next_tier_info['amount_needed']) . '</span>',
+                '<span class="mdm-next-tier">' . esc_html($next_tier_info['tier']) . '</span>',
+                '<span class="mdm-next-discount">' . esc_html($next_tier_info['discount']) . '</span>'
+            );
 
-        // Randomly select a message for variety
-        $message = $messages[array_rand($messages)];
+            return sprintf('<p class="mdm-message mdm-tier-progress">%s</p>', $message);
 
-        // Wrap the entire message in a container
-        return sprintf('<div class="mdm-message mdm-message-progress">%s</div>', $message);
+        } catch (\Exception $e) {
+            $this->logger->error('Error rendering next tier progress', [
+                'error' => $e->getMessage()
+            ]);
+            return '';
+        }
     }
 } 

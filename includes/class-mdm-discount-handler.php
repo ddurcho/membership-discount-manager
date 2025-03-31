@@ -189,7 +189,7 @@ class Discount_Handler {
         add_action('woocommerce_review_order_before_order_total', array($this, 'display_discount_info'), 99);
         
         // Coupon restriction hooks
-        add_filter('woocommerce_coupon_is_valid', array($this, 'validate_coupon_for_vip'), 10, 2);
+        add_filter('woocommerce_coupon_is_valid', array($this, 'validate_coupon_for_loyalty'), 10, 2);
         add_action('woocommerce_before_cart', array($this, 'check_and_remove_coupons'));
         add_action('woocommerce_before_checkout_form', array($this, 'check_and_remove_coupons'));
         
@@ -538,7 +538,7 @@ class Discount_Handler {
                 // Add the discount as a fee
                 $cart->add_fee(
                     sprintf(
-                        __('%s Tier Membership Discount (%s%%)', 'membership-discount-manager'),
+                        __('Loyalty %s Tier Membership Discount (%s%%)', 'membership-discount-manager'),
                         $discount_info['tier'],
                         $discount_info['percentage']
                     ),
@@ -546,6 +546,15 @@ class Discount_Handler {
                 );
 
                 WC()->session->set('mdm_total_discount', $total_discount);
+
+                wc_add_notice(
+                    sprintf(
+                        __('Loyalty %s Tier Membership Discount (%s%%) has been applied to your cart.', 'membership-discount-manager'),
+                        $discount_info['tier'],
+                        $discount_info['percentage']
+                    ),
+                    'success'
+                );
             }
 
         } catch (\Exception $e) {
@@ -623,7 +632,7 @@ class Discount_Handler {
                 // Add the discount as a negative fee
                 $cart->add_fee(
                     sprintf(
-                        __('VIP %s Tier Discount (%s%%)', 'membership-discount-manager'),
+                        __('Loyalty %s Tier Discount (%s%%)', 'membership-discount-manager'),
                         $discount_info['tier'],
                         $discount_info['percentage']
                     ),
@@ -633,9 +642,10 @@ class Discount_Handler {
                 // Handle coupon restrictions
                 if (!empty($cart->get_applied_coupons())) {
                     $cart->remove_coupons();
+                    
                     wc_add_notice(
                         sprintf(
-                            __('Note: Your VIP %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
+                            __('Note: Your Loyalty %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
                             $discount_info['tier'],
                             $discount_info['percentage']
                         ),
@@ -677,7 +687,7 @@ class Discount_Handler {
                     $new_rows[$key] = $row;
                     $new_rows['discount'] = array(
                         'label' => sprintf(
-                            __('VIP %s Tier Discount (%s%%)', 'membership-discount-manager'),
+                            __('Loyalty %s Tier Discount (%s%%)', 'membership-discount-manager'),
                             $discount_info['tier'],
                             $discount_info['percentage']
                         ),
@@ -723,43 +733,42 @@ class Discount_Handler {
     }
 
     /**
-     * Validate if coupon can be used with VIP discount
+     * Validate if coupon can be used with loyalty discount
      *
      * @param bool $valid
      * @param WC_Coupon $coupon
      * @return bool
      */
-    public function validate_coupon_for_vip($valid, $coupon) {
-        // If coupon is already invalid for other reasons, return early
+    public function validate_coupon_for_loyalty($valid, $coupon) {
         if (!$valid) {
-            return $valid;
-        }
-
-        $user_id = get_current_user_id();
-        $discount_info = $this->get_user_discount($user_id);
-
-        // If user has VIP discount, prevent coupon usage with custom message
-        if ($discount_info) {
-            // Show message only if not already shown
-            if (!wc_has_notice('vip_discount_notice')) {
-                wc_add_notice(
-                    sprintf(
-                        __('The coupon "%s" cannot be used because your VIP %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
-                        $coupon->get_code(),
-                        $discount_info['tier'],
-                        $discount_info['percentage']
-                    ),
-                    'error'
-                );
-            }
             return false;
         }
 
-        return $valid;
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            return $valid;
+        }
+
+        $discount_info = $this->get_user_discount($user_id);
+        if (!$discount_info) {
+            return $valid;
+        }
+
+        wc_add_notice(
+            sprintf(
+                __('The coupon "%s" cannot be used because your Loyalty %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
+                $coupon->get_code(),
+                $discount_info['tier'],
+                $discount_info['percentage']
+            ),
+            'error'
+        );
+
+        return false;
     }
 
     /**
-     * Check and remove any applied coupons for VIP members
+     * Check and remove any applied coupons for loyalty members
      */
     public function check_and_remove_coupons() {
         // This functionality is now handled in add_discount_fee
