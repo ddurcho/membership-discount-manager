@@ -754,15 +754,39 @@ class Discount_Handler {
             return $valid;
         }
 
-        wc_add_notice(
-            sprintf(
-                __('The coupon "%s" cannot be used because your Loyalty %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
-                $coupon->get_code(),
-                $discount_info['tier'],
-                $discount_info['percentage']
-            ),
-            'error'
-        );
+        // Check if any products in cart have loyalty discount enabled
+        $has_loyalty_products = false;
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (empty($cart_item['data'])) {
+                continue;
+            }
+
+            $product = $cart_item['data'];
+            if (Product::is_discount_enabled($product)) {
+                $has_loyalty_products = true;
+                break;
+            }
+        }
+
+        // If no products have loyalty discount enabled, allow coupon
+        if (!$has_loyalty_products) {
+            return $valid;
+        }
+
+        // Only show the notice once
+        static $notice_shown = false;
+        if (!$notice_shown) {
+            wc_add_notice(
+                sprintf(
+                    __('The coupon "%s" cannot be used because your Loyalty %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
+                    $coupon->get_code(),
+                    $discount_info['tier'],
+                    $discount_info['percentage']
+                ),
+                'error'
+            );
+            $notice_shown = true;
+        }
 
         return false;
     }
