@@ -202,4 +202,45 @@
 /* Spinner styles */
 .spinner.is-active {
     visibility: visible;
+}
+
+/* Message Styles */
+.mdm-message {
+    margin: 15px 0;
+    padding: 15px;
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+.mdm-message-progress {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+}
+
+.mdm-message-success {
+    background-color: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+}
+
+.mdm-tier {
+    font-weight: 700;
+    color: #0073aa;
+}
+
+.mdm-amount {
+    font-weight: 600;
+    color: #28a745;
+}
+
+.mdm-discount {
+    font-weight: 600;
+    color: #dc3545;
+}
+
+/* Responsive Styles */
+@media screen and (max-width: 782px) {
+    .mdm-message {
+        padding: 10px;
+    }
 } 

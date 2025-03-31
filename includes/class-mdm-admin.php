@@ -504,6 +504,9 @@ class Admin {
                 <a href="?page=nestwork-options&tab=automation" class="nav-tab <?php echo $current_tab === 'automation' ? 'nav-tab-active' : ''; ?>">
                     <?php _e('Automation', 'membership-discount-manager'); ?>
                 </a>
+                <a href="?page=nestwork-options&tab=shortcodes" class="nav-tab <?php echo $current_tab === 'shortcodes' ? 'nav-tab-active' : ''; ?>">
+                    <?php _e('Shortcodes', 'membership-discount-manager'); ?>
+                </a>
                 <a href="?page=nestwork-options&tab=debug" class="nav-tab <?php echo $current_tab === 'debug' ? 'nav-tab-active' : ''; ?>">
                     <?php _e('Debug', 'membership-discount-manager'); ?>
                 </a>
@@ -720,6 +723,54 @@ class Admin {
                         </div>
                     </div>
                     <?php
+                } else if ($current_tab === 'shortcodes') {
+                    ?>
+                    <div id="shortcodes-settings" class="mdm-settings-section">
+                        <div class="mdm-settings-box">
+                            <h2><?php _e('Available Shortcodes', 'membership-discount-manager'); ?></h2>
+                            <div class="inside">
+                                <table class="form-table">
+                                    <tr>
+                                        <th scope="row">[mdm_vip_status]</th>
+                                        <td>
+                                            <p class="description">
+                                                <?php _e('Displays the current user\'s VIP status (Bronze, Silver, Gold, Platinum).', 'membership-discount-manager'); ?>
+                                                <br>
+                                                <code>[mdm_vip_status]</code>
+                                            </p>
+                                            <p>
+                                                <strong><?php _e('Example Output:', 'membership-discount-manager'); ?></strong>
+                                                <code>Gold</code>
+                                            </p>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th scope="row">[mdm_next_tier_progress]</th>
+                                        <td>
+                                            <p class="description">
+                                                <?php _e('Shows how much more the user needs to spend to reach the next VIP tier, with a motivational message.', 'membership-discount-manager'); ?>
+                                                <br>
+                                                <code>[mdm_next_tier_progress]</code>
+                                            </p>
+                                            <p>
+                                                <strong><?php _e('Example Outputs:', 'membership-discount-manager'); ?></strong>
+                                                <ul>
+                                                    <li><code><?php _e('Spend $230.00 more to unlock Silver status and enjoy 10% discount! 🎯', 'membership-discount-manager'); ?></code></li>
+                                                    <li><code><?php _e('You\'re just $500.00 away from Gold tier and a sweet 15% discount! 🚀', 'membership-discount-manager'); ?></code></li>
+                                                    <li><code><?php _e('Almost there! $1,000.00 more unlocks Platinum benefits with 20% savings! ⭐', 'membership-discount-manager'); ?></code></li>
+                                                    <li><code><?php _e('Congratulations! You\'ve reached our highest VIP tier! 🎉', 'membership-discount-manager'); ?></code></li>
+                                                </ul>
+                                            </p>
+                                            <p class="description">
+                                                <?php _e('Note: The shortcode automatically uses your configured tier thresholds and shows random motivational messages for variety.', 'membership-discount-manager'); ?>
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <?php
                 } else if ($current_tab === 'debug') {
                     // Debug Tab
                     ?>
@@ -801,7 +852,7 @@ class Admin {
                 }
                 ?>
                 
-                <?php submit_button(); ?>
+                <?php if ($current_tab !== 'shortcodes') { submit_button(); } ?>
             </form>
         </div>
         <?php
