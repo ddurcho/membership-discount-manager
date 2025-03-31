@@ -33,6 +33,7 @@ require_once MDM_PLUGIN_DIR . 'includes/class-mdm-setup.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-admin.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-cron.php';
 require_once MDM_PLUGIN_DIR . 'includes/class-mdm-shortcodes.php';
+require_once MDM_PLUGIN_DIR . 'includes/class-mdm-product.php';
 
 /**
  * Check if WooCommerce is active
@@ -129,8 +130,13 @@ function mdm_init() {
     }
 
     // Initialize classes
-    global $mdm_admin, $mdm_setup, $mdm_cron;
+    global $mdm_admin, $mdm_setup, $mdm_cron, $mdm_product;
 
+    // Initialize core components first
+    $mdm_logger = new MembershipDiscountManager\Logger();
+    $mdm_product = new MembershipDiscountManager\Product();
+
+    // Initialize admin and setup
     $mdm_admin = new MembershipDiscountManager\Admin();
     $mdm_setup = new MembershipDiscountManager\Setup();
     $mdm_cron = new MembershipDiscountManager\Cron();
@@ -143,8 +149,7 @@ function mdm_init() {
         new MembershipDiscountManager\Discount_Handler();
     }
 
-    // Initialize plugin components
-    $mdm_logger = new MembershipDiscountManager\Logger();
+    // Initialize remaining components
     $mdm_shortcodes = new MembershipDiscountManager\Shortcodes();
 
     // Only log initialization in debug mode

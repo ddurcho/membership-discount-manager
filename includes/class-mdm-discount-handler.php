@@ -28,13 +28,11 @@ class Discount_Handler {
         }
 
         // Initialize logger
-        if (!isset($this->logger)) {
-            $this->logger = new Logger();
-        }
+        $this->logger = new Logger();
         
         // Early debug logging only if debug mode is enabled
         if (get_option('mdm_debug_mode', false)) {
-            error_log('🚀 MDM: Discount Handler Constructor Called');
+            $this->logger->debug('🚀 MDM: Discount Handler Constructor Called');
         }
         
         // Register our hooks after WooCommerce is loaded
@@ -238,12 +236,22 @@ class Discount_Handler {
             return $price_html;
         }
 
+        // Check if loyalty discount is enabled for this product
+        if (!Product::is_discount_enabled($product)) {
+            $this->logger->debug('Not adjusting price display - loyalty discount not enabled', [
+                'product_id' => $product->get_id(),
+                'product_name' => $product->get_name()
+            ]);
+            return $price_html;
+        }
+
         $original_price = $product->get_price();
         $discount_amount = ($original_price * $discount_info['percentage']) / 100;
         $discounted_price = $original_price - $discount_amount;
 
         $this->logger->debug('Adjusting product price display', [
             'product_id' => $product->get_id(),
+            'product_name' => $product->get_name(),
             'original_price' => $original_price,
             'discount_percentage' => $discount_info['percentage'],
             'discounted_price' => $discounted_price
@@ -305,12 +313,23 @@ class Discount_Handler {
         }
 
         $product = $cart_item['data'];
+
+        // Check if loyalty discount is enabled for this product
+        if (!Product::is_discount_enabled($product)) {
+            $this->logger->debug('Not adjusting cart item price - loyalty discount not enabled', [
+                'product_id' => $product->get_id(),
+                'product_name' => $product->get_name()
+            ]);
+            return $price_html;
+        }
+
         $original_price = $product->get_price();
         $discount_amount = ($original_price * $discount_info['percentage']) / 100;
         $discounted_price = $original_price - $discount_amount;
 
         $this->logger->debug('Adjusting cart item price', [
             'product_id' => $product->get_id(),
+            'product_name' => $product->get_name(),
             'original_price' => $original_price,
             'discount_percentage' => $discount_info['percentage'],
             'discounted_price' => $discounted_price
@@ -341,6 +360,16 @@ class Discount_Handler {
         }
 
         $product = $cart_item['data'];
+
+        // Check if loyalty discount is enabled for this product
+        if (!Product::is_discount_enabled($product)) {
+            $this->logger->debug('Not adjusting cart item subtotal - loyalty discount not enabled', [
+                'product_id' => $product->get_id(),
+                'product_name' => $product->get_name()
+            ]);
+            return $subtotal;
+        }
+
         $quantity = $cart_item['quantity'];
         $original_price = $product->get_price();
         $original_subtotal = $original_price * $quantity;
@@ -349,6 +378,7 @@ class Discount_Handler {
 
         $this->logger->debug('Adjusting cart item subtotal', [
             'product_id' => $product->get_id(),
+            'product_name' => $product->get_name(),
             'quantity' => $quantity,
             'original_subtotal' => $original_subtotal,
             'discount_percentage' => $discount_info['percentage'],
@@ -363,63 +393,61 @@ class Discount_Handler {
     }
 
     /**
-     * Get user's current discount tier and percentage
+     * Get user's discount information
      *
      * @param int $user_id
-     * @return array|false Array with tier and percentage or false if no discount
+     * @return array|false
      */
-    public function get_user_discount($user_id) {
-        if (!$user_id) {
+    private function get_user_discount($user_id) {
+        static $cached_discount = array();
+        
+        // Return cached result if available
+        if (isset($cached_discount[$user_id])) {
+            return $cached_discount[$user_id];
+        }
+        
+        $discount_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
+        if (!$discount_tier || $discount_tier === 'None') {
+            $cached_discount[$user_id] = false;
             return false;
         }
 
-        // Get discount tier and settings
-        $discount_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
-        $tier_settings = get_option('mdm_tier_settings', array());
+        $available_tiers = array(
+            'none' => 0,
+            'bronze' => 5,
+            'silver' => 10,
+            'gold' => 15,
+            'platinum' => 20
+        );
 
-        // Ensure logger is initialized
-        if (!isset($this->logger)) {
-            $this->logger = new Logger();
-        }
-
-        // Only log if debug mode is enabled
-        if (get_option('mdm_debug_mode', false)) {
-            $this->logger->debug('Checking discount tier', [
+        $tier_key = strtolower($discount_tier);
+        if (!isset($available_tiers[$tier_key])) {
+            $this->logger->error('Invalid discount tier', [
                 'user_id' => $user_id,
                 'discount_tier' => $discount_tier,
-                'available_tiers' => array_keys($tier_settings)
+                'available_tiers' => array_keys($available_tiers)
             ]);
-        }
-
-        // Return false if tier is None or empty
-        if (empty($discount_tier) || $discount_tier === 'None') {
+            $cached_discount[$user_id] = false;
             return false;
         }
 
-        // Normalize the tier name to lowercase for comparison
-        $normalized_tier = strtolower($discount_tier);
-        $normalized_settings = array_change_key_case($tier_settings, CASE_LOWER);
+        $discount_info = array(
+            'tier' => ucfirst($tier_key),
+            'percentage' => floatval($available_tiers[$tier_key])
+        );
 
-        // Check for valid discount tier
-        if (isset($normalized_settings[$normalized_tier])) {
-            $discount_info = array(
-                'tier' => $discount_tier, // Keep original case for display
-                'percentage' => $normalized_settings[$normalized_tier]['discount']
-            );
-            
-            // Only log if debug mode is enabled
-            if (get_option('mdm_debug_mode', false)) {
-                $this->logger->info('User discount retrieved', [
-                    'user_id' => $user_id,
-                    'tier' => $discount_tier,
-                    'percentage' => $normalized_settings[$normalized_tier]['discount']
-                ]);
-            }
-            
-            return $discount_info;
-        }
+        $this->logger->info('User discount tier active', [
+            'user_id' => $user_id,
+            'tier' => $discount_info['tier'],
+            'percentage' => $discount_info['percentage'],
+            'calculation_example' => sprintf(
+                'For a €100 product, discount would be: €%.2f',
+                100 * ($discount_info['percentage'] / 100)
+            )
+        ]);
 
-        return false;
+        $cached_discount[$user_id] = $discount_info;
+        return $discount_info;
     }
 
     /**
@@ -473,11 +501,29 @@ class Discount_Handler {
                 }
 
                 $product = $cart_item['data'];
+                
+                // Check if loyalty discount is enabled for this product
+                if (!Product::is_discount_enabled($product)) {
+                    $this->logger->debug('Skipping product - loyalty discount not enabled', [
+                        'product_id' => $product->get_id(),
+                        'product_name' => $product->get_name()
+                    ]);
+                    continue;
+                }
+
                 $original_price = $product->get_regular_price() ? $product->get_regular_price() : $product->get_price();
                 
                 if ($original_price > 0) {
                     $discount_amount = ($original_price * $discount_info['percentage']) / 100;
                     $total_discount += $discount_amount * $cart_item['quantity'];
+
+                    $this->logger->debug('Applied discount to product', [
+                        'product_id' => $product->get_id(),
+                        'product_name' => $product->get_name(),
+                        'original_price' => $original_price,
+                        'discount_amount' => $discount_amount,
+                        'quantity' => $cart_item['quantity']
+                    ]);
                 }
             }
 
@@ -486,7 +532,7 @@ class Discount_Handler {
                 $cart->add_fee(
                     sprintf(
                         __('%s Tier Membership Discount (%s%%)', 'membership-discount-manager'),
-                        $discount_info['tier'], // Use original case for display
+                        $discount_info['tier'],
                         $discount_info['percentage']
                     ),
                     -$total_discount
@@ -505,7 +551,7 @@ class Discount_Handler {
     }
 
     /**
-     * Add discount as a negative fee
+     * Add discount fee
      *
      * @param WC_Cart $cart
      */
@@ -525,79 +571,73 @@ class Discount_Handler {
 
             $user_id = get_current_user_id();
             if (!$user_id) {
-                // Clear any existing discount data
-                WC()->session->set('mdm_discount_info', null);
-                WC()->session->set('mdm_total_discount', 0);
                 return;
             }
 
-            // Get fresh discount info instead of from session
+            // Get fresh discount info
             $discount_info = $this->get_user_discount($user_id);
-            if (!$discount_info || empty($discount_info['tier']) || $discount_info['tier'] === 'None') {
-                // Clear any existing discount data if no valid tier is found
-                WC()->session->set('mdm_discount_info', null);
-                WC()->session->set('mdm_total_discount', 0);
+            if (!$discount_info) {
                 return;
             }
 
-            // Get cart subtotal excluding tax
-            $subtotal = $cart->get_subtotal();
-            
-            // Calculate discount
-            $total_discount = ($subtotal * $discount_info['percentage']) / 100;
+            // Calculate subtotal only for eligible products
+            $eligible_subtotal = 0;
 
-            $this->logger->debug('Calculating discount', [
-                'user_id' => $user_id,
-                'discount_tier' => $discount_info['tier'],
-                'discount_percentage' => $discount_info['percentage'],
-                'cart_subtotal' => $subtotal,
-                'calculated_discount' => $total_discount
-            ]);
+            foreach ($cart->get_cart() as $cart_item) {
+                if (empty($cart_item['data'])) {
+                    continue;
+                }
 
-            if ($total_discount > 0) {
-                // Add as a negative fee
+                $product = $cart_item['data'];
+                
+                // Only include products with loyalty discount enabled
+                if (!Product::is_discount_enabled($product)) {
+                    continue;
+                }
+
+                // Get the correct price based on the spending calculation setting
+                $use_net_total = get_option('mdm_use_net_total', true);
+                if ($use_net_total) {
+                    // Use price excluding tax
+                    $price = wc_get_price_excluding_tax($product);
+                } else {
+                    // Use price including tax
+                    $price = wc_get_price_including_tax($product);
+                }
+                
+                $eligible_subtotal += $price * $cart_item['quantity'];
+            }
+
+            // Only proceed if we have eligible products
+            if ($eligible_subtotal > 0) {
+                // Calculate discount
+                $discount_amount = $eligible_subtotal * ($discount_info['percentage'] / 100);
+
+                // Add the discount as a negative fee
                 $cart->add_fee(
                     sprintf(
                         __('VIP %s Tier Discount (%s%%)', 'membership-discount-manager'),
                         $discount_info['tier'],
                         $discount_info['percentage']
                     ),
-                    -$total_discount
+                    -$discount_amount
                 );
 
-                // Store for display
-                WC()->session->set('mdm_discount_info', $discount_info);
-                WC()->session->set('mdm_total_discount', $total_discount);
-
-                // If there are any coupons applied, remove them and show notice
+                // Handle coupon restrictions
                 if (!empty($cart->get_applied_coupons())) {
                     $cart->remove_coupons();
-                    
-                    // Show message only if not already shown
-                    if (!wc_has_notice('vip_discount_notice')) {
-                        wc_add_notice(
-                            sprintf(
-                                __('Note: Your VIP %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
-                                $discount_info['tier'],
-                                $discount_info['percentage']
-                            ),
-                            'notice',
-                            ['vip_discount_notice']
-                        );
-                    }
+                    wc_add_notice(
+                        sprintf(
+                            __('Note: Your VIP %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
+                            $discount_info['tier'],
+                            $discount_info['percentage']
+                        ),
+                        'notice'
+                    );
                 }
-            } else {
-                // Clear discount data if no discount is calculated
-                WC()->session->set('mdm_discount_info', null);
-                WC()->session->set('mdm_total_discount', 0);
             }
         } catch (\Exception $e) {
-            $this->logger->error('Error applying discount fee', [
-                'error' => $e->getMessage()
-            ]);
-            // Clear discount data on error
-            WC()->session->set('mdm_discount_info', null);
-            WC()->session->set('mdm_total_discount', 0);
+            error_log('MDM Error: ' . $e->getMessage());
         } finally {
             $is_calculating = false;
         }
