@@ -66,6 +66,8 @@ class Product {
      */
     public static function is_discount_enabled($product) {
         static $logger = null;
+        static $logged_products = array();
+        
         if ($logger === null) {
             $logger = new Logger();
         }
@@ -82,11 +84,15 @@ class Product {
 
         $enabled = get_post_meta($product_id, '_mdm_loyalty_discount_enabled', true) === 'yes';
         
-        $logger->debug('Checking loyalty discount status', [
-            'product_id' => $product_id,
-            'enabled' => $enabled ? 'yes' : 'no',
-            'meta_value' => get_post_meta($product_id, '_mdm_loyalty_discount_enabled', true)
-        ]);
+        // Log status only once per product per page load
+        if (!isset($logged_products[$product_id])) {
+            $logger->debug('Checking loyalty discount status', [
+                'product_id' => $product_id,
+                'enabled' => $enabled ? 'yes' : 'no',
+                'meta_value' => get_post_meta($product_id, '_mdm_loyalty_discount_enabled', true)
+            ]);
+            $logged_products[$product_id] = true;
+        }
         
         return $enabled;
     }

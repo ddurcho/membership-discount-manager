@@ -30,9 +30,11 @@ class Discount_Handler {
         // Initialize logger
         $this->logger = new Logger();
         
-        // Early debug logging only if debug mode is enabled
-        if (get_option('mdm_debug_mode', false)) {
+        // Log constructor call only once per page load
+        static $constructor_logged = false;
+        if (!$constructor_logged && get_option('mdm_debug_mode', false)) {
             $this->logger->debug('🚀 MDM: Discount Handler Constructor Called');
+            $constructor_logged = true;
         }
         
         // Register our hooks after WooCommerce is loaded
@@ -400,6 +402,7 @@ class Discount_Handler {
      */
     private function get_user_discount($user_id) {
         static $cached_discount = array();
+        static $logged_tiers = array();
         
         // Return cached result if available
         if (isset($cached_discount[$user_id])) {
@@ -436,15 +439,19 @@ class Discount_Handler {
             'percentage' => floatval($available_tiers[$tier_key])
         );
 
-        $this->logger->info('User discount tier active', [
-            'user_id' => $user_id,
-            'tier' => $discount_info['tier'],
-            'percentage' => $discount_info['percentage'],
-            'calculation_example' => sprintf(
-                'For a €100 product, discount would be: €%.2f',
-                100 * ($discount_info['percentage'] / 100)
-            )
-        ]);
+        // Log tier info only once per user per page load
+        if (!isset($logged_tiers[$user_id])) {
+            $this->logger->info('User discount tier active', [
+                'user_id' => $user_id,
+                'tier' => $discount_info['tier'],
+                'percentage' => $discount_info['percentage'],
+                'calculation_example' => sprintf(
+                    'For a €100 product, discount would be: €%.2f',
+                    100 * ($discount_info['percentage'] / 100)
+                )
+            ]);
+            $logged_tiers[$user_id] = true;
+        }
 
         $cached_discount[$user_id] = $discount_info;
         return $discount_info;
