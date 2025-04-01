@@ -740,6 +740,16 @@ class Discount_Handler {
      * @return bool
      */
     public function validate_coupon_for_loyalty($valid, $coupon) {
+        // Only run this check on cart and checkout pages
+        if (!is_cart() && !is_checkout()) {
+            return $valid;
+        }
+
+        // Make sure we have a valid cart object
+        if (!isset(WC()->cart) || WC()->cart->is_empty()) {
+            return $valid;
+        }
+
         if (!$valid) {
             return false;
         }
