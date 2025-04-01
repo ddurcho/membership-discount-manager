@@ -13,41 +13,58 @@ class Discount_Handler {
     private $logger;
 
     /**
-     * Static flag to track initialization
-     * @var bool
+     * @var bool Initialization flag
      */
     private static $initialized = false;
+
+    /**
+     * @var array Cache for user discounts
+     */
+    private static $user_discount_cache = [];
 
     /**
      * Constructor
      */
     public function __construct() {
-        // Prevent duplicate initialization
         if (self::$initialized) {
             return;
         }
 
-        // Initialize logger
         $this->logger = new Logger();
-        
-        // Log constructor call only once per page load
-        static $constructor_logged = false;
-        if (!$constructor_logged && get_option('mdm_debug_mode', false)) {
-            $this->logger->debug('🚀 MDM: Discount Handler Constructor Called');
-            $constructor_logged = true;
-        }
         
         // Register our hooks after WooCommerce is loaded
         if (did_action('woocommerce_init')) {
             $this->init_hooks();
-            $this->debug_discount_setup();
         } else {
-            add_action('woocommerce_init', array($this, 'init_hooks'), 1);
-            add_action('woocommerce_init', array($this, 'debug_discount_setup'), 1);
+            add_action('woocommerce_init', array($this, 'init_hooks'));
+        }
+    }
+
+    /**
+     * Initialize WooCommerce hooks
+     */
+    public function init_hooks() {
+        if (self::$initialized) {
+            return;
         }
 
-        // Add early checkout hook
-        add_action('wp', array($this, 'early_checkout_debug'));
+        // Cart calculation hooks - only use add_discount_fee for consistency
+        add_action('woocommerce_cart_calculate_fees', array($this, 'add_discount_fee'), 99);
+        
+        // Coupon restriction hooks
+        add_filter('woocommerce_coupon_is_valid', array($this, 'validate_coupon_for_loyalty'), 10, 2);
+        add_action('woocommerce_before_cart', array($this, 'check_and_remove_coupons'));
+        add_action('woocommerce_before_checkout_form', array($this, 'check_and_remove_coupons'));
+        
+        // Cart change detection
+        add_action('woocommerce_cart_item_removed', array($this, 'clear_discount_notices'));
+        add_action('woocommerce_add_to_cart', array($this, 'clear_discount_notices'));
+        add_action('woocommerce_cart_emptied', array($this, 'clear_discount_notices'));
+        
+        // CartFlows compatibility
+        if (class_exists('\\CartFlows\\Core')) {
+            add_action('cartflows_checkout_before_calculate_totals', array($this, 'add_discount_fee'), 99);
+        }
 
         self::$initialized = true;
     }
@@ -175,243 +192,29 @@ class Discount_Handler {
     }
 
     /**
-     * Initialize WooCommerce hooks
-     */
-    public function init_hooks() {
-        error_log('⚡ MDM: Init Hooks Called');
-        //$this->logger->info('⚡ MDM: Initializing Hooks');
-
-        // Cart calculation hooks
-        add_action('woocommerce_cart_calculate_fees', array($this, 'add_discount_fee'), 99);
-        
-        // Display hooks
-        add_action('woocommerce_cart_totals_before_order_total', array($this, 'display_discount_info'), 99);
-        add_action('woocommerce_review_order_before_order_total', array($this, 'display_discount_info'), 99);
-        
-        // Coupon restriction hooks
-        add_filter('woocommerce_coupon_is_valid', array($this, 'validate_coupon_for_loyalty'), 10, 2);
-        add_action('woocommerce_before_cart', array($this, 'check_and_remove_coupons'));
-        add_action('woocommerce_before_checkout_form', array($this, 'check_and_remove_coupons'));
-        
-        // CartFlows compatibility
-        if (class_exists('\\CartFlows\\Core')) {
-            add_action('cartflows_checkout_before_calculate_totals', array($this, 'add_discount_fee'), 99);
-        }
-
-        //$this->logger->info('⚡ MDM: Hooks Initialized');
-    }
-
-    /**
-     * Initialize WooCommerce Blocks support
-     */
-    public function init_blocks_support() {
-        $this->logger->debug('Initializing WooCommerce Blocks support');
-        
-        if (!function_exists('woocommerce_store_api_register_update_callback')) {
-            $this->logger->error('WooCommerce Blocks API not available');
-            return;
-        }
-
-        woocommerce_store_api_register_update_callback([
-            'namespace' => 'membership-discount-manager',
-            'callback' => function($cart_data) {
-                if (!is_null(WC()->cart)) {
-                    $this->apply_discount_to_cart(WC()->cart);
-                }
-                return $cart_data;
-            }
-        ]);
-    }
-
-    /**
-     * Adjust price display in shop and product pages
-     *
-     * @param string $price_html
-     * @param WC_Product $product
-     * @return string
-     */
-    public function adjust_price_display($price_html, $product) {
-        $user_id = get_current_user_id();
-        $discount_info = $this->get_user_discount($user_id);
-
-        if (!$discount_info) {
-            return $price_html;
-        }
-
-        // Check if loyalty discount is enabled for this product
-        if (!Product::is_discount_enabled($product)) {
-            $this->logger->debug('Not adjusting price display - loyalty discount not enabled', [
-                'product_id' => $product->get_id(),
-                'product_name' => $product->get_name()
-            ]);
-            return $price_html;
-        }
-
-        $original_price = $product->get_price();
-        $discount_amount = ($original_price * $discount_info['percentage']) / 100;
-        $discounted_price = $original_price - $discount_amount;
-
-        $this->logger->debug('Adjusting product price display', [
-            'product_id' => $product->get_id(),
-            'product_name' => $product->get_name(),
-            'original_price' => $original_price,
-            'discount_percentage' => $discount_info['percentage'],
-            'discounted_price' => $discounted_price
-        ]);
-
-        return sprintf(
-            '<del>%s</del> <ins>%s</ins> <span class="discount-badge">%s%% OFF</span>',
-            wc_price($original_price),
-            wc_price($discounted_price),
-            $discount_info['percentage']
-        );
-    }
-
-    /**
-     * Adjust the final cart total
-     *
-     * @param float $total
-     * @param WC_Cart $cart
-     * @return float
-     */
-    public function adjust_cart_total($total, $cart) {
-        $user_id = get_current_user_id();
-        $discount_info = $this->get_user_discount($user_id);
-
-        if (!$discount_info) {
-            return $total;
-        }
-
-        $discount_amount = ($total * $discount_info['percentage']) / 100;
-        $final_total = $total - $discount_amount;
-
-        $this->logger->debug('Adjusting cart total', [
-            'original_total' => $total,
-            'discount_percentage' => $discount_info['percentage'],
-            'discount_amount' => $discount_amount,
-            'final_total' => $final_total
-        ]);
-
-        // Store for display
-        WC()->session->set('mdm_total_discount', $discount_amount);
-
-        return $final_total;
-    }
-
-    /**
-     * Adjust the displayed price for cart items
-     *
-     * @param string $price_html
-     * @param array $cart_item
-     * @param string $cart_item_key
-     * @return string
-     */
-    public function adjust_cart_item_price($price_html, $cart_item, $cart_item_key) {
-        $user_id = get_current_user_id();
-        $discount_info = $this->get_user_discount($user_id);
-
-        if (!$discount_info) {
-            return $price_html;
-        }
-
-        $product = $cart_item['data'];
-
-        // Check if loyalty discount is enabled for this product
-        if (!Product::is_discount_enabled($product)) {
-            $this->logger->debug('Not adjusting cart item price - loyalty discount not enabled', [
-                'product_id' => $product->get_id(),
-                'product_name' => $product->get_name()
-            ]);
-            return $price_html;
-        }
-
-        $original_price = $product->get_price();
-        $discount_amount = ($original_price * $discount_info['percentage']) / 100;
-        $discounted_price = $original_price - $discount_amount;
-
-        $this->logger->debug('Adjusting cart item price', [
-            'product_id' => $product->get_id(),
-            'product_name' => $product->get_name(),
-            'original_price' => $original_price,
-            'discount_percentage' => $discount_info['percentage'],
-            'discounted_price' => $discounted_price
-        ]);
-
-        // Show both original and discounted price
-        return sprintf(
-            '<del>%s</del> <ins>%s</ins>',
-            wc_price($original_price),
-            wc_price($discounted_price)
-        );
-    }
-
-    /**
-     * Adjust the subtotal display for cart items
-     *
-     * @param string $subtotal
-     * @param array $cart_item
-     * @param string $cart_item_key
-     * @return string
-     */
-    public function adjust_cart_item_subtotal($subtotal, $cart_item, $cart_item_key) {
-        $user_id = get_current_user_id();
-        $discount_info = $this->get_user_discount($user_id);
-
-        if (!$discount_info) {
-            return $subtotal;
-        }
-
-        $product = $cart_item['data'];
-
-        // Check if loyalty discount is enabled for this product
-        if (!Product::is_discount_enabled($product)) {
-            $this->logger->debug('Not adjusting cart item subtotal - loyalty discount not enabled', [
-                'product_id' => $product->get_id(),
-                'product_name' => $product->get_name()
-            ]);
-            return $subtotal;
-        }
-
-        $quantity = $cart_item['quantity'];
-        $original_price = $product->get_price();
-        $original_subtotal = $original_price * $quantity;
-        $discount_amount = ($original_subtotal * $discount_info['percentage']) / 100;
-        $discounted_subtotal = $original_subtotal - $discount_amount;
-
-        $this->logger->debug('Adjusting cart item subtotal', [
-            'product_id' => $product->get_id(),
-            'product_name' => $product->get_name(),
-            'quantity' => $quantity,
-            'original_subtotal' => $original_subtotal,
-            'discount_percentage' => $discount_info['percentage'],
-            'discounted_subtotal' => $discounted_subtotal
-        ]);
-
-        return sprintf(
-            '<del>%s</del> <ins>%s</ins>',
-            wc_price($original_subtotal),
-            wc_price($discounted_subtotal)
-        );
-    }
-
-    /**
-     * Get user's discount information
+     * Get user's discount information with caching
      *
      * @param int $user_id
      * @return array|false
      */
     private function get_user_discount($user_id) {
-        static $cached_discount = array();
-        static $logged_tiers = array();
-        
-        // Return cached result if available
-        if (isset($cached_discount[$user_id])) {
-            return $cached_discount[$user_id];
+        // Check static cache first
+        if (isset(self::$user_discount_cache[$user_id])) {
+            return self::$user_discount_cache[$user_id];
         }
-        
+
+        // Check transient cache
+        $cache_key = 'mdm_user_discount_' . $user_id;
+        $cached_discount = get_transient($cache_key);
+        if ($cached_discount !== false) {
+            self::$user_discount_cache[$user_id] = $cached_discount;
+            return $cached_discount;
+        }
+
         $discount_tier = get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true);
         if (!$discount_tier || $discount_tier === 'None') {
-            $cached_discount[$user_id] = false;
+            self::$user_discount_cache[$user_id] = false;
+            set_transient($cache_key, false, HOUR_IN_SECONDS);
             return false;
         }
 
@@ -425,12 +228,8 @@ class Discount_Handler {
 
         $tier_key = strtolower($discount_tier);
         if (!isset($available_tiers[$tier_key])) {
-            $this->logger->error('Invalid discount tier', [
-                'user_id' => $user_id,
-                'discount_tier' => $discount_tier,
-                'available_tiers' => array_keys($available_tiers)
-            ]);
-            $cached_discount[$user_id] = false;
+            self::$user_discount_cache[$user_id] = false;
+            set_transient($cache_key, false, HOUR_IN_SECONDS);
             return false;
         }
 
@@ -439,225 +238,95 @@ class Discount_Handler {
             'percentage' => floatval($available_tiers[$tier_key])
         );
 
-        // Log tier info only once per user per page load
-        if (!isset($logged_tiers[$user_id])) {
-            $this->logger->info('User discount tier active', [
-                'user_id' => $user_id,
-                'tier' => $discount_info['tier'],
-                'percentage' => $discount_info['percentage'],
-                'calculation_example' => sprintf(
-                    'For a €100 product, discount would be: €%.2f',
-                    100 * ($discount_info['percentage'] / 100)
-                )
-            ]);
-            $logged_tiers[$user_id] = true;
-        }
+        // Cache the result
+        self::$user_discount_cache[$user_id] = $discount_info;
+        set_transient($cache_key, $discount_info, HOUR_IN_SECONDS);
 
-        $cached_discount[$user_id] = $discount_info;
         return $discount_info;
     }
 
     /**
-     * Apply discount to cart
-     *
-     * @param WC_Cart $cart
+     * Disable coupons completely when loyalty discount is applicable
      */
-    public function apply_discount_to_cart($cart) {
-        if ($cart->is_empty()) {
+    public function disable_coupons_for_loyalty($enabled) {
+        return $this->should_block_coupons() ? false : $enabled;
+    }
+
+    /**
+     * Block shop coupon data to prevent coupon display
+     */
+    public function block_shop_coupon_data($data, $coupon, $code) {
+        return $this->should_block_coupons() ? false : $data;
+    }
+
+    /**
+     * Hide coupon HTML in cart
+     */
+    public function hide_coupon_html($coupon_html, $coupon, $discount_amount_html) {
+        return $this->should_block_coupons() ? '' : $coupon_html;
+    }
+
+    /**
+     * Force remove all coupons if loyalty discount is applicable
+     */
+    public function force_remove_coupons() {
+        if (!is_object(WC()->cart) || !method_exists(WC()->cart, 'get_cart')) {
             return;
         }
 
-        // Avoid infinite loops
-        static $is_calculating = false;
-        if ($is_calculating) {
-            return;
-        }
+        if ($this->should_block_coupons()) {
+            // Remove all applied coupons
+            WC()->cart->remove_coupons();
+            
+            // Clear session data related to coupons
+            WC()->session->set('applied_coupons', array());
+            WC()->session->set('coupon_discount_totals', array());
+            WC()->session->set('coupon_discount_tax_totals', array());
+            
+            // Remove any stored coupon data
+            delete_option('woocommerce_cart_coupon_data');
+            
+            // Force cart update
+            WC()->cart->calculate_totals();
 
-        try {
-            $is_calculating = true;
-
+            // Clear existing notices and add new one
+            $this->clear_discount_notices();
+            
             $user_id = get_current_user_id();
-            if (!$user_id) {
-                return;
-            }
-
             $discount_info = $this->get_user_discount($user_id);
-            if (!$discount_info) {
-                $this->logger->debug('No discount info found', [
-                    'user_id' => $user_id,
-                    'meta' => get_user_meta($user_id, '_wc_memberships_profile_field_discount_tier', true)
-                ]);
-                return;
-            }
-
-            $this->logger->info('Processing cart discount', [
-                'user_id' => $user_id,
-                'discount_tier' => $discount_info['tier'],
-                'discount_percentage' => $discount_info['percentage']
-            ]);
-
-            // Store discount info in session for later use
-            WC()->session->set('mdm_discount_info', $discount_info);
-
-            // Calculate total discount amount
-            $total_discount = 0;
-
-            foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
-                if (empty($cart_item['data'])) {
-                    continue;
-                }
-
-                $product = $cart_item['data'];
-                
-                // Check if loyalty discount is enabled for this product
-                if (!Product::is_discount_enabled($product)) {
-                    $this->logger->debug('Skipping product - loyalty discount not enabled', [
-                        'product_id' => $product->get_id(),
-                        'product_name' => $product->get_name()
-                    ]);
-                    continue;
-                }
-
-                $original_price = $product->get_regular_price() ? $product->get_regular_price() : $product->get_price();
-                
-                if ($original_price > 0) {
-                    $discount_amount = ($original_price * $discount_info['percentage']) / 100;
-                    $total_discount += $discount_amount * $cart_item['quantity'];
-
-                    $this->logger->debug('Applied discount to product', [
-                        'product_id' => $product->get_id(),
-                        'product_name' => $product->get_name(),
-                        'original_price' => $original_price,
-                        'discount_amount' => $discount_amount,
-                        'quantity' => $cart_item['quantity']
-                    ]);
-                }
-            }
-
-            if ($total_discount > 0) {
-                // Add the discount as a fee
-                $cart->add_fee(
-                    sprintf(
-                        __('Loyalty %s Tier Membership Discount (%s%%)', 'membership-discount-manager'),
-                        $discount_info['tier'],
-                        $discount_info['percentage']
-                    ),
-                    -$total_discount
-                );
-
-                WC()->session->set('mdm_total_discount', $total_discount);
-
-                wc_add_notice(
-                    sprintf(
-                        __('Loyalty %s Tier Membership Discount (%s%%) has been applied to your cart.', 'membership-discount-manager'),
-                        $discount_info['tier'],
-                        $discount_info['percentage']
-                    ),
-                    'success'
-                );
-            }
-
-        } catch (\Exception $e) {
-            $this->logger->error('Error in discount calculation', [
-                'error' => $e->getMessage()
-            ]);
-        } finally {
-            $is_calculating = false;
+            wc_add_notice(
+                sprintf(
+                    __('Coupons cannot be used with Loyalty %s Tier Discount (%s%%).', 'membership-discount-manager'),
+                    $discount_info['tier'],
+                    $discount_info['percentage']
+                ),
+                'notice'
+            );
         }
     }
 
     /**
-     * Add discount fee
-     *
-     * @param WC_Cart $cart
+     * Validate if coupon can be used with loyalty discount
      */
-    public function add_discount_fee($cart) {
-        // Static flag to prevent recursion
-        static $is_calculating = false;
-        if ($is_calculating) {
-            return;
+    public function validate_coupon_for_loyalty($valid, $coupon) {
+        if (!$valid) {
+            return $valid;
         }
 
-        try {
-            $is_calculating = true;
-
-            if ($cart->is_empty()) {
-                return;
-            }
-
-            $user_id = get_current_user_id();
-            if (!$user_id) {
-                return;
-            }
-
-            // Get fresh discount info
-            $discount_info = $this->get_user_discount($user_id);
-            if (!$discount_info) {
-                return;
-            }
-
-            // Calculate subtotal only for eligible products
-            $eligible_subtotal = 0;
-
-            foreach ($cart->get_cart() as $cart_item) {
-                if (empty($cart_item['data'])) {
-                    continue;
-                }
-
-                $product = $cart_item['data'];
-                
-                // Only include products with loyalty discount enabled
-                if (!Product::is_discount_enabled($product)) {
-                    continue;
-                }
-
-                // Get the correct price based on the spending calculation setting
-                $use_net_total = get_option('mdm_use_net_total', true);
-                if ($use_net_total) {
-                    // Use price excluding tax
-                    $price = wc_get_price_excluding_tax($product);
-                } else {
-                    // Use price including tax
-                    $price = wc_get_price_including_tax($product);
-                }
-                
-                $eligible_subtotal += $price * $cart_item['quantity'];
-            }
-
-            // Only proceed if we have eligible products
-            if ($eligible_subtotal > 0) {
-                // Calculate discount
-                $discount_amount = $eligible_subtotal * ($discount_info['percentage'] / 100);
-
-                // Add the discount as a negative fee
-                $cart->add_fee(
-                    sprintf(
-                        __('Loyalty %s Tier Discount (%s%%)', 'membership-discount-manager'),
-                        $discount_info['tier'],
-                        $discount_info['percentage']
-                    ),
-                    -$discount_amount
-                );
-
-                // Handle coupon restrictions
-                if (!empty($cart->get_applied_coupons())) {
-                    $cart->remove_coupons();
-                    
-                    wc_add_notice(
-                        sprintf(
-                            __('Note: Your Loyalty %s Tier Discount (%s%%) has been automatically applied. Additional coupons cannot be combined with your loyalty discount.', 'membership-discount-manager'),
-                            $discount_info['tier'],
-                            $discount_info['percentage']
-                        ),
-                        'notice'
-                    );
-                }
-            }
-        } catch (\Exception $e) {
-            error_log('MDM Error: ' . $e->getMessage());
-        } finally {
-            $is_calculating = false;
+        if ($this->should_block_coupons()) {
+            // Clear any existing notices first
+            $this->clear_discount_notices();
+            
+            wc_add_notice(
+                sprintf(
+                    __('Coupons cannot be used when Loyalty Discount is enabled for any product in your cart.', 'membership-discount-manager'),
+                ),
+                'error'
+            );
+            return false;
         }
+
+        return $valid;
     }
 
     /**
@@ -733,69 +402,47 @@ class Discount_Handler {
     }
 
     /**
-     * Validate if coupon can be used with loyalty discount
-     *
-     * @param bool $valid
-     * @param WC_Coupon $coupon
-     * @return bool
+     * Remove all coupons from cart totals
      */
-    public function validate_coupon_for_loyalty($valid, $coupon) {
-        // Only run this check on cart and checkout pages
-        if (!is_cart() && !is_checkout()) {
-            return $valid;
+    public function remove_all_coupons($coupons) {
+        if ($this->should_block_coupons()) {
+            return array();
         }
+        return $coupons;
+    }
 
-        // Make sure we have a valid cart object
-        if (!isset(WC()->cart) || WC()->cart->is_empty()) {
-            return $valid;
-        }
-
-        if (!$valid) {
+    /**
+     * Check if coupons should be blocked
+     */
+    private function should_block_coupons() {
+        if (!is_object(WC()->cart) || !method_exists(WC()->cart, 'get_cart')) {
             return false;
         }
 
         $user_id = get_current_user_id();
         if (!$user_id) {
-            return $valid;
+            return false;
         }
 
         $discount_info = $this->get_user_discount($user_id);
         if (!$discount_info) {
-            return $valid;
+            return false;
         }
 
-        // Check if any products in cart have loyalty discount enabled
-        $has_loyalty_products = false;
+        // Check if any products have loyalty discount enabled
         foreach (WC()->cart->get_cart() as $cart_item) {
-            if (empty($cart_item['data'])) {
-                continue;
+            if (!empty($cart_item['data'])) {
+                $product = $cart_item['data'];
+                $is_enabled = Product::is_discount_enabled($product);
+                error_log(sprintf(
+                    'MDM Debug - Product %d loyalty discount enabled: %s',
+                    $product->get_id(),
+                    $is_enabled ? 'yes' : 'no'
+                ));
+                if ($is_enabled) {
+                    return true;
+                }
             }
-
-            $product = $cart_item['data'];
-            if (Product::is_discount_enabled($product)) {
-                $has_loyalty_products = true;
-                break;
-            }
-        }
-
-        // If no products have loyalty discount enabled, allow coupon
-        if (!$has_loyalty_products) {
-            return $valid;
-        }
-
-        // Only show the notice once
-        static $notice_shown = false;
-        if (!$notice_shown) {
-            wc_add_notice(
-                sprintf(
-                    __('The coupon "%s" cannot be used because your Loyalty %s Tier Discount (%s%%) is already applied.', 'membership-discount-manager'),
-                    $coupon->get_code(),
-                    $discount_info['tier'],
-                    $discount_info['percentage']
-                ),
-                'error'
-            );
-            $notice_shown = true;
         }
 
         return false;
@@ -805,7 +452,161 @@ class Discount_Handler {
      * Check and remove any applied coupons for loyalty members
      */
     public function check_and_remove_coupons() {
-        // This functionality is now handled in add_discount_fee
-        return;
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            return;
+        }
+
+        $discount_info = $this->get_user_discount($user_id);
+        if (!$discount_info) {
+            return;
+        }
+
+        // Check if any products have loyalty discount enabled
+        $has_loyalty_products = false;
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (!empty($cart_item['data']) && Product::is_discount_enabled($cart_item['data'])) {
+                $has_loyalty_products = true;
+                break;
+            }
+        }
+
+        // If we have loyalty-enabled products, remove all coupons
+        if ($has_loyalty_products && !empty(WC()->cart->get_applied_coupons())) {
+            WC()->cart->remove_coupons();
+            wc_add_notice(
+                sprintf(
+                    __('Coupons cannot be used with Loyalty %s Tier Discount (%s%%).', 'membership-discount-manager'),
+                    $discount_info['tier'],
+                    $discount_info['percentage']
+                ),
+                'notice'
+            );
+        }
+    }
+
+    /**
+     * Add discount fee to cart
+     *
+     * @param WC_Cart $cart
+     */
+    public function add_discount_fee($cart) {
+        static $is_calculating = false;
+        
+        if ($is_calculating || !is_object($cart) || !method_exists($cart, 'is_empty') || $cart->is_empty()) {
+            return;
+        }
+
+        try {
+            $is_calculating = true;
+
+            // Clear any existing notices when recalculating
+            $this->clear_discount_notices();
+
+            $user_id = get_current_user_id();
+            if (!$user_id) {
+                return;
+            }
+
+            $discount_info = $this->get_user_discount($user_id);
+            if (!$discount_info) {
+                return;
+            }
+
+            // Calculate eligible subtotal
+            $eligible_subtotal = 0;
+            $use_net_total = get_option('mdm_use_net_total', true);
+
+            foreach ($cart->get_cart() as $cart_item) {
+                if (empty($cart_item['data'])) {
+                    continue;
+                }
+
+                $product = $cart_item['data'];
+                if (!Product::is_discount_enabled($product)) {
+                    continue;
+                }
+
+                // Get the base price
+                $base_price = $product->get_price();
+                
+                // Calculate price with quantity
+                if ($use_net_total) {
+                    $price = wc_get_price_excluding_tax($product, array(
+                        'qty' => $cart_item['quantity'],
+                        'price' => $base_price
+                    ));
+                } else {
+                    $price = wc_get_price_including_tax($product, array(
+                        'qty' => $cart_item['quantity'],
+                        'price' => $base_price
+                    ));
+                }
+                
+                $eligible_subtotal += $price;
+            }
+
+            if ($eligible_subtotal <= 0) {
+                return;
+            }
+
+            // Calculate discount amount
+            $discount_amount = $eligible_subtotal * ($discount_info['percentage'] / 100);
+            
+            // Store in session for later use
+            WC()->session->set('mdm_discount_info', array(
+                'tier' => $discount_info['tier'],
+                'percentage' => $discount_info['percentage'],
+                'amount' => $discount_amount,
+                'eligible_subtotal' => $eligible_subtotal
+            ));
+
+            // Force remove any coupons before adding the discount
+            $this->check_and_remove_coupons();
+
+            // Add the discount as a negative fee
+            $cart->add_fee(
+                sprintf(
+                    __('Loyalty %s Tier Discount (%s%%)', 'membership-discount-manager'),
+                    $discount_info['tier'],
+                    $discount_info['percentage']
+                ),
+                -$discount_amount,
+                true // Is taxable
+            );
+
+        } catch (\Exception $e) {
+            error_log('MDM Error: ' . $e->getMessage());
+        } finally {
+            $is_calculating = false;
+        }
+    }
+
+    /**
+     * Clear discount-related notices
+     */
+    public function clear_discount_notices() {
+        $notices = wc_get_notices();
+        
+        // Remove our specific notices
+        if (!empty($notices)) {
+            foreach (['error', 'notice', 'success'] as $notice_type) {
+                if (isset($notices[$notice_type])) {
+                    foreach ($notices[$notice_type] as $key => $notice) {
+                        // Check if the notice contains our specific messages
+                        if (strpos($notice['notice'], 'Loyalty') !== false && 
+                            (strpos($notice['notice'], 'Discount') !== false || 
+                             strpos($notice['notice'], 'Coupons') !== false)) {
+                            unset($notices[$notice_type][$key]);
+                        }
+                    }
+                }
+            }
+            wc_set_notices($notices);
+        }
+
+        // Clear our static flags
+        static $notice_shown = false;
+        $notice_shown = false;
     }
 } 
